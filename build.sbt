@@ -4,7 +4,7 @@ lazy val xdrGen = project.in(file(".")).
     scalaVersion := "2.10.5",
     version := "0.1-SNAPSHOT",
     libraryDependencies += "org.parboiled" %% "parboiled" % "2.1.0"
-  )
+  ).dependsOn(targetJVM)
 
 lazy val xdrbase = crossProject.crossType(CrossType.Full).in(file(".")).
    settings(
