@@ -7,12 +7,12 @@ object xdr_generator {
     import CharPredicate.{Digit, Digit19, HexDigit}
 
     def WhiteSpaceChar = CharPredicate(" \n\r\t\f")
-    def WhiteSpace = rule { zeroOrMore(WhiteSpaceChar) }
+    def WhiteSpaceSep = rule { oneOrMore(WhiteSpaceChar) }
     def Newline = rule { "\r\n" | "\n" }
     def MultilineComment: Rule0 = rule { "/*" ~ zeroOrMore(MultilineComment | !"*/" ~ ANY) ~ "*/" }
     def Comment: Rule0 = rule {
       MultilineComment |
-        "//" ~ zeroOrMore(!Newline ~ ANY) ~ &(Newline | EOI)
+        ("//" | "%#") ~ zeroOrMore(!Newline ~ ANY) ~ &(Newline | EOI)
     }
     def WL = rule{ zeroOrMore(WhiteSpaceChar | Comment) }
 
@@ -24,37 +24,40 @@ object xdr_generator {
     implicit private[this] def wspStr(s: String): Rule0 = rule { str(s) ~ WL  }
     implicit private[this] def wspChar(s: Char): Rule0 = rule { ch(s) ~WL }
 
+    def KeyWord(s: String) = rule {
+      str(s) ~ WhiteSpaceSep
+    }
     // the root rule
-    def XDRFiles = rule { WL ~ "namespace" ~  Identifier ~ "{" ~ Specification ~ "}" ~ EOI }
+    def XDRFiles = rule { WL ~ KeyWord("namespace") ~  Identifier ~ "{" ~ Specification ~ "}" ~ EOI }
 
     def Identifier = rule {CharPredicate.Alpha ~ zeroOrMore(CharPredicate.AlphaNum | ch('_')) ~ WL }
-    def DecimalConstant = rule(oneOrMore(Digit))
-    def HexadecimalConstant =  rule { "0x" ~ oneOrMore(HexDigit) }
-    def OctalConstant = rule( "0" ~ oneOrMore("0" | ("1" - "7")))
+    def DecimalConstant = rule(optional(ch('-')) ~ oneOrMore(Digit) ~WL)
+    def HexadecimalConstant =  rule { "0x" ~ oneOrMore(HexDigit) ~WL }
+    def OctalConstant = rule( "0" ~ oneOrMore("0" | ("1" - "7")) ~WL )
 
-    def Declaration :Rule0 = rule {(
-      (TypeSpecifier ~ Identifier) |
+    def Declaration :Rule0 = rule {
+      "void" |
+      (KeyWord("opaque") ~ Identifier ~ "[" ~ Value ~ "]") |
+      (KeyWord("opaque") ~ Identifier ~ "<" ~ optional(Value) ~ ">") |
+      (KeyWord("string") ~ Identifier ~ "<" ~ optional(Value) ~  ">") |
+      (TypeSpecifier ~ "*" ~ Identifier) |
       (TypeSpecifier ~ Identifier ~ "[" ~ Value ~ "]") |
       (TypeSpecifier ~ Identifier ~ "<" ~ optional(Value) ~ ">") |
-      ("opaque" ~ Identifier ~ "[" ~ Value ~ "]") |
-      ("opaque" ~ Identifier ~ "<" ~ optional(Value) ~ ">") |
-      ("string" ~ Identifier ~ "<" ~ optional(Value) ~  ">") |
-      (TypeSpecifier ~ "*" ~ Identifier) |
-      ("void")
-    )}
+      (TypeSpecifier ~ Identifier)
+    }
 
 
     def Value = rule { Constant | Identifier }
 
-    def Constant = rule { DecimalConstant | HexadecimalConstant | OctalConstant }
+    def Constant = rule { HexadecimalConstant | OctalConstant | DecimalConstant }
 
     def TypeSpecifier = rule {
-      (optional("unsigned") ~ "int") |
-      (optional("unsigned") ~ "hyper") |
-        ("float") |
-        ("double") |
-        ("quadruple") |
-        ("bool") |
+      (optional(KeyWord("unsigned")) ~ KeyWord("int")) |
+      (optional(KeyWord("unsigned")) ~ KeyWord("hyper")) |
+        KeyWord("float") |
+        KeyWord("double") |
+        KeyWord("quadruple") |
+        KeyWord("bool") |
         EnumTypeSpec |
         StructTypeSpec |
         UnionTypeSpec |
@@ -81,7 +84,8 @@ object xdr_generator {
     def UnionBody = rule {
       "switch" ~ "(" ~ Declaration ~ ")" ~ "{" ~
         CaseSpec ~
-        zeroOrMore( CaseSpec) ~ optional("default" ~ ":" ~ Declaration ~ ";") ~
+        zeroOrMore( CaseSpec) ~
+        optional("default" ~ ":" ~ Declaration ~ ";") ~
         "}"
     }
 
@@ -108,19 +112,30 @@ object xdr_generator {
 
   import scala.util.Failure
 
-  def run() {
-    val input = scala.io.Source.fromFile("../../../xdr/Stellar-types.x").mkString
-    print(input)
-    val parser = new XDRParser(input)
-    val result = parser.XDRFiles.run()
-    println(result)
-    result match {
-      case Failure(error :ParseError) => {
-        println(parser.formatError(error, new ErrorFormatter(showTraces = true)))
+  def xdrPathes = Seq(
+    "/xdr/Stellar-SCP.x",
+    "/xdr/Stellar-types.x",
+    "/xdr/Stellar-ledger-entries.x",
+    "/xdr/Stellar-transaction.x",
+    "/xdr/Stellar-ledger.x",
+    "/xdr/Stellar-overlay.x"
+  )
 
+  def run() {
+    xdrPathes.foreach( file => {
+      val input = scala.io.Source.fromFile("../../.." + file).mkString
+      val parser = new XDRParser(input)
+      val result = parser.XDRFiles.run()
+      println(result)
+      result match {
+        case Failure(error: ParseError) => {
+          println(s"parse error in $file:")
+          println(parser.formatError(error, new ErrorFormatter(showTraces = true)))
+
+        }
+        case _ => {}
       }
-      case _ => {}
-    }
+    })
   }
 }
 
