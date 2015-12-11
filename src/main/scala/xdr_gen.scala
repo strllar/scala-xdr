@@ -1,5 +1,7 @@
 package org.strllar.scalaxdr
 
+import shapeless.HNil
+
 object xdr_generator {
   import org.parboiled2._
 
@@ -112,7 +114,8 @@ object xdr_generator {
 
   }
 
-  import scala.util.Failure
+  import scala.util.{Success, Failure}
+  import shapeless._
 
   def xdrPathes = Seq(
     "/xdr/Stellar-SCP.x",
@@ -134,8 +137,9 @@ object xdr_generator {
           println(parser.formatError(error, new ErrorFormatter(showTraces = true)))
 
         }
-        case _ => {
+        case Success(ns :: spec  :: HNil) => {
           println(s"parse done in $file:")
+          println(org.strllar.scalaxdr.codegen.genScala(ns.ident, spec))
           //println(result)
         }
       }
