@@ -18,13 +18,13 @@ case class XDRIdentifierLiteral(ident :String) //identifier in section 6.2
 //    | "void"
 //
 sealed trait XDRDeclaration
-case class XDRPlainDeclaration(name :XDRIdentifierLiteral, typespec :XDRTypeSpecifier) extends XDRDeclaration
-case class XDRFixedLengthArray(name :XDRIdentifierLiteral,typespec :XDRTypeSpecifier, length :XDRValue) extends XDRDeclaration //section 4.12
-case class XDRVariableLengthArray(name :XDRIdentifierLiteral,typespec :XDRTypeSpecifier, maxlength :Option[XDRValue]) extends XDRDeclaration //section 4.13
+case class XDRPlainDeclaration(typespec :XDRTypeSpecifier, name :XDRIdentifierLiteral) extends XDRDeclaration
+case class XDRFixedLengthArray(typespec :XDRTypeSpecifier, name :XDRIdentifierLiteral, length :XDRValue) extends XDRDeclaration //section 4.12
+case class XDRVariableLengthArray(typespec :XDRTypeSpecifier, name :XDRIdentifierLiteral,maxlength :Option[XDRValue]) extends XDRDeclaration //section 4.13
 case class XDRFixedLengthOpaque(name :XDRIdentifierLiteral, length :XDRValue) extends XDRDeclaration //section 4.9
 case class XDRVariableLengthOpaque(name :XDRIdentifierLiteral, maxlength :Option[XDRValue]) extends XDRDeclaration //section 4.10
 case class XDRString(name :XDRIdentifierLiteral, maxlength :Option[XDRValue]) extends XDRDeclaration //section 4.11
-case class XDROptional(name :XDRIdentifierLiteral,typespec :XDRTypeSpecifier) extends XDRDeclaration //section 4.19
+case class XDROptional(typespec :XDRTypeSpecifier, name :XDRIdentifierLiteral) extends XDRDeclaration //section 4.19
 case class XDRVoid() extends XDRDeclaration //section 4.16
 
 //concrete XDRValue
@@ -34,8 +34,8 @@ case class XDRVoid() extends XDRDeclaration //section 4.16
 //    | identifier
 //
 sealed trait XDRValue
-case class XDRConstantValue(value :String) extends XDRValue
-case class XDRIdentifierValue(ident :String) extends XDRValue
+case class XDRConstantValue(value :XDRConstantLiteral) extends XDRValue
+case class XDRIdentifierValue(ident :XDRIdentifierLiteral) extends XDRValue
 
 //concrete XDRConstant
 //
@@ -131,9 +131,9 @@ case class XDRConstant(name :XDRIdentifierLiteral, value :XDRConstantLiteral) //
 //
 sealed trait XDRTypeDef
 case class XDRPlainTypedef(declaration :XDRDeclaration) extends XDRTypeDef //section 4.18
-case class XDREnumType(name :XDRIdentifierLiteral, body :XDREnumBody) extends XDRTypeDef //section 4.3
-case class XDRStructType(name :XDRIdentifierLiteral, body :XDRStructBody) extends XDRTypeDef //section 4.14
-case class XDRUnionType(name :XDRIdentifierLiteral, body :XDRUnionBody) extends XDRTypeDef //section 4.15
+case class XDREnumTypedef(name :XDRIdentifierLiteral, body :XDREnumBody) extends XDRTypeDef //section 4.3
+case class XDRStructTypedef(name :XDRIdentifierLiteral, body :XDRStructBody) extends XDRTypeDef //section 4.14
+case class XDRUnionTypedef(name :XDRIdentifierLiteral, body :XDRUnionBody) extends XDRTypeDef //section 4.15
 
 //XDRDefinition
 //
