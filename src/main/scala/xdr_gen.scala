@@ -133,14 +133,12 @@ object xdr_generator {
       val result = parser.XDRFiles.run()
       result match {
         case Failure(error: ParseError) => {
-          println(s"parse error in $file:")
+          println(s"//$file: parse error")
           println(parser.formatError(error, new ErrorFormatter(showTraces = true)))
-
         }
         case Success(ns :: spec  :: HNil) => {
-          println(s"parse done in $file:")
-          println(org.strllar.scalaxdr.codegen.genScala(ns.ident, spec))
-          //println(result)
+          println(s"//$file: parse done")
+          org.strllar.scalaxdr.codegen.genScala(ns.ident, spec).getLines.foreach(println)
         }
       }
     })
