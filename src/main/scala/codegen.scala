@@ -12,36 +12,24 @@ package codegen {
     class Snippet(val pkgname :Option[String]) {
       val vStack = ListBuffer.empty[Tree]
 
-      def source :scala.io.Source = {
-        scala.io.Source.fromIterable(
-          pkgname.map( pn => {
-            val pname = TermName(pn)
-
-            showCode(q"""
+      def mkAST = {
+        pkgname.map( pn => {
+          val pname = TermName(pn)
+          q"""
             package $pname { }
             package object $pname {..$vStack }
-            """).toSeq
-          }).getOrElse(showCode(q"..$vStack").toSeq)
-
-        )
+            """
+        }).getOrElse(q"..$vStack")
       }
+
       def declare(tree :Tree): Unit = {
         vStack.append(tree)
       }
-
-      def defConstant(id :String, value :Int) = {
-        //todo
-      }
-      def refConstant(id :String) = {
-        Select(Ident(TermName("gConstants")), TermName(id))
-      }
-
     }
 
     def newSnippet(pkgname :String, predefs :Tree): Snippet = new Snippet(Some(pkgname)) {
       vStack.append(predefs)
     }
-    //def newBlock(line :String) =
   }
 
   object Extractors {
@@ -61,6 +49,59 @@ package codegen {
   object SemanticProcesser {
     import Extractors._
 
+    def reifyDeclaration(xdecl :XDRDeclaration)(implicit c:ScalaScaffold.Snippet)  {
+      xdecl match {
+        case x@XDRPlainDeclaration(_,_) => {
+          parseTypeSpec(x.typespec, x.name)
+        }
+        case x@XDRFixedLengthArray(_, _, _) => {
+          parseTypeSpec(x.typespec, x.name)
+        }
+        case x@XDRVariableLengthArray(_, _, _) => {
+          parseTypeSpec(x.typespec, x.name)
+        }
+        case x@XDROptional(_, _) => {
+          parseTypeSpec(x.typespec, x.name)
+        }
+        case x@XDRFixedLengthOpaque(_, _) => {
+
+        }
+        case x@XDRVariableLengthOpaque(_, _) => {
+
+        }
+        case x@XDRString(_, _) => {
+
+        }
+        case x@XDRVoid() => {
+
+        }
+      }
+    }
+    def parseTypeSpec (tpe :XDRTypeSpecifier, name :XDRIdentifierLiteral)(implicit c:ScalaScaffold.Snippet) = {
+      tpe match {
+        case x@XDRInteger => {}
+        case x@XDRUnsignedInteger => {}
+        case x@XDRHyper(_) => {}
+        case x@XDRFloat => {}
+        case x@XDRDouble => {}
+        case x@XDRQuadruple => {}
+        case x@XDRBoolean => {}
+        case x@XDREnumeration(_) => {
+          reifyEnum("anon_enum_"+name.ident, x.body)
+        }
+        case x@XDRStructure(_) => {
+          reifyStruct("anon_enum"+name.ident, x.body)
+        }
+        case x@XDRUnion(_) => {
+          reifyUnion("anon_enum"+name.ident, x.body)
+        }
+        case x@XDRIdentifierTypeSpecifier(_) => {}
+      }
+    }
+
+    def refConstant(id :String) = {
+        Select(Ident(TermName("gConstants")), TermName(id))
+    }
     def reifyEnum(name :String, body :XDREnumBody)(implicit c:ScalaScaffold.Snippet) = {
 
       //val enum = c.defineEnum(name) //todo
@@ -74,7 +115,7 @@ package codegen {
               q"case class $itemname() extends Enum(..${List(v.dig)})"
             }
             case x@XDRIdentifierValue(_) => {
-              val identref = c.refConstant(x.dig)
+              val identref = refConstant(x.dig)
               q"case class $itemname() extends Enum(..${List(identref)})"
             }
         }
@@ -144,8 +185,8 @@ package codegen {
 }
 
 package object codegen {
-  def genScala(ns :String, spec :XDRSpecification) = {
 
+  def genAST(ns :String, spec :XDRSpecification) = {
     implicit val src = ScalaScaffold.newSnippet("xdr_generated",
       q"{ import org.strllar.scalaxdr.xdrbase._ }"
     )
@@ -155,6 +196,12 @@ package object codegen {
         SemanticProcesser.processConstDef(_)
       )
     })
-    src.source
+    src.mkAST
+  }
+
+  def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
+    scala.io.Source.fromIterable(
+      showCode(genAST(ns, spec)).toSeq
+    )
   }
 }
