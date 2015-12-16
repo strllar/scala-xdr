@@ -1,8 +1,6 @@
 package org.strllar.scalaxdr
 
-import shapeless.HNil
-
-object xdr_generator {
+object XDRSyntax {
   import org.parboiled2._
 
   trait exactRules {self: Parser =>
@@ -20,7 +18,7 @@ object xdr_generator {
 
   }
 
-  class XDRParser(val input: ParserInput) extends Parser with exactRules {
+  class TopParser(val input: ParserInput) extends Parser with exactRules {
     import CharPredicate.{Digit, Digit19, HexDigit}
 
     implicit private[this] def wspStr(s: String): Rule0 = rule { str(s) ~ WL  }
@@ -114,6 +112,10 @@ object xdr_generator {
 
   }
 
+}
+
+object xdrGenApp extends App {
+  import org.parboiled2.{ErrorFormatter, ParseError}
   import scala.util.{Success, Failure}
   import shapeless._
 
@@ -129,7 +131,7 @@ object xdr_generator {
   def run() {
     xdrPathes.foreach( file => {
       val input = scala.io.Source.fromFile("../../.." + file).mkString
-      val parser = new XDRParser(input)
+      val parser = new XDRSyntax.TopParser(input)
       val result = parser.XDRFiles.run()
       result match {
         case Failure(error: ParseError) => {
@@ -143,8 +145,6 @@ object xdr_generator {
       }
     })
   }
-}
 
-object XDRParser extends App {
-  xdr_generator.run()
+  run()
 }
