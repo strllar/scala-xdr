@@ -16,7 +16,14 @@ lazy val xdrbase = crossProject.crossType(CrossType.Full).in(file(".")).
      organization := "org.strllar",
      scalaVersion := "2.10.5",
      libraryDependencies +=  "org.scala-lang" % "scala-reflect" % scalaVersion.value
-   )
+   ).
+  jvmSettings(
+    libraryDependencies += "org.scodec" %% "scodec-core" % "1.8.3"
+  ).
+  jsSettings(
+    libraryDependencies += "org.scodec" %%% "scodec-core" % "1.8.3"
+  )
+
 
 lazy val targetJVM = xdrbase.jvm
 lazy val targetJS = xdrbase.js
