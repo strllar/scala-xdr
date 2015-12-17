@@ -16,8 +16,7 @@ package codegen {
         pkgname.map( pn => {
           val pname = TermName(pn)
           q"""
-            package $pname { }
-            package object $pname {..$vStack }
+            package $pname {..$vStack}
             """
         }).getOrElse(q"..$vStack")
       }
@@ -27,8 +26,8 @@ package codegen {
       }
     }
 
-    def newSnippet(pkgname :String, predefs :Tree): Snippet = new Snippet(Some(pkgname)) {
-      vStack.append(predefs)
+    def newSnippet(predefs :Tree, pkgname :Option[String]): Snippet = new Snippet(pkgname) {
+      if (predefs.isEmpty == false) vStack.append(predefs)
     }
   }
 
@@ -187,8 +186,9 @@ package codegen {
 package object codegen {
 
   def genAST(ns :String, spec :XDRSpecification) = {
-    implicit val src = ScalaScaffold.newSnippet("xdr_generated",
-      q"{ import org.strllar.scalaxdr.xdrbase._ }"
+    implicit val src = ScalaScaffold.newSnippet(
+      q"",
+      Some(ns)
     )
     spec.defs.map(_.anydef).foreach( x => {
       x.fold(
