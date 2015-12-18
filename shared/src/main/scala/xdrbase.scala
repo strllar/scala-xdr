@@ -43,7 +43,7 @@ object XDRCodecs {
 
   val XDRHyper :Codec[Long] = codecs.int64.withToString("XDRHyper")
 
-  //val XDRUnsignedHyper :Codec[BigInt] =
+  val XDRUnsignedHyper :Codec[BigInt] = (codecs.uint32 ~ codecs.uint32).xmap[BigInt](x => BigInt(x._1) * (1L<<32) + x._2, x => ((x / (1L<<32)).toLong, (x % (1L<<32)).toLong)).withToString("XDRUnsignedHyper")
 
   val XDRFloat :Codec[Float] = codecs.float.withToString("XDRFloat")
 
@@ -71,14 +71,13 @@ object XDRCodecs {
 
   def XDROptional[T](codec :Codec[T]) :Codec[Option[T]] = codecs.optional(XDRBoolean, codec)
 
-  def XDRFixedLengthArray[T](codec :Codec[T])(len :Long) :Codec[Vector[T]] =
+  def XDRFixedLengthArray[T](codec :Codec[T])(len :Long) :Codec[Vector[T]] = {
+    assert(len < Int.MaxValue && len > 0)
     codecs.vectorOfN(
-      codecs.uint32.narrow[Int](
-        (x) => if (x > Int.MaxValue) Attempt.failure(Err("unsupported array length than Int.MaxValue")) else Attempt.successful(x.toInt),
-        _ + 0L
-      ),
+      codecs.provide(len.toInt),
       codec
     ).withToString(s"XDRArray $codec[$len]")
+  }
 
   def XDRVariableLengthArray[T](maxlen :Option[Long],  codec :Codec[T]) :Codec[Vector[T]] =
     XDRVariableLength(maxlen, XDRFixedLengthArray(codec)).withToString(s"XDRArray $codec<${maxlen.getOrElse("")}>")
