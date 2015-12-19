@@ -2,7 +2,6 @@ package org.strllar.scalaxdr
 
 import scala.collection.mutable.ListBuffer
 import scala.reflect.runtime.universe._
-import shapeless._
 import rfc4506._
 
 package codegen {
@@ -46,6 +45,7 @@ package codegen {
   }
 
   object SemanticProcesser {
+
     import Extractors._
 
     def reifyDeclaration(xdecl :XDRDeclaration)(implicit c:ScalaScaffold.Snippet)  {
@@ -129,74 +129,104 @@ package codegen {
 
     }
 
-    def processConstDef(x :XDRConstant)(implicit c:ScalaScaffold.Snippet) = {
-      x match {
-        case XDRConstant(XDRIdentifierLiteral(name), DecimalConstant(value)) => {
-          //println(s"val $name = $value")
-        }
-        case XDRConstant(XDRIdentifierLiteral(name), HexadecimalConstant(value)) => {
-          //println(s"val $name = $value")
-        }
-        case XDRConstant(XDRIdentifierLiteral(name), OctalConstant(value)) => {
-          //println(s"val $name = $value")
-        }
-      }
+//        case XDRPlainTypedef(XDRPlainDeclaration(XDRIdentifierTypeSpecifier(XDRIdentifierLiteral(name)), XDRIdentifierLiteral(alias))) => {
+//          val origtpe = TypeName(name)
+//          val aliastpe = TypeName(alias)
+//          c.declare(q"type $aliastpe = $origtpe")
+//        }
+//        case XDRPlainTypedef(XDRFixedLengthOpaque(XDRIdentifierLiteral(name), len)) => {
+//          //todo value type
+//          //todo codec type
+//          //println(s"val $name:Vector[Byte] //fixlen: ${len.dig}")
+//          //val lenref = c.refConstant(len) //todo
+//        }
+//        case XDRPlainTypedef(XDRVariableLengthOpaque(XDRIdentifierLiteral(name), olen)) => {
+//          olen match {
+//            case None => {
+//              //println(s"val $name:Vector[Byte] //maxlen: -1")
+//            }
+//            case Some(len@XDRConstantValue(_)) => {
+//              //println(s"val $name:Vector[Byte] //maxlen: ${len.dig}")
+//            }
+//          }
+//        }
+//        case XDREnumTypedef(XDRIdentifierLiteral(name), body) => {
+//          reifyEnum(name, body)
+//        }
+//        case XDRStructTypedef(XDRIdentifierLiteral(name), body) => {
+//          reifyStruct(name, body)
+//        }
+//        case XDRUnionTypedef(XDRIdentifierLiteral(name), body) => {
+//          reifyUnion(name, body)
+//        }
+//      }
+//    }
+
+    import shapeless._
+
+    type PrimaryType = XDRFixedLengthOpaque :+: XDRVariableLengthOpaque :+: XDRString :+: XDRVoid :+: XDRInteger.type :+: XDRUnsignedInteger.type :+: XDRHyper :+: XDRFloat.type  :+: XDRDouble.type  :+: XDRQuadruple.type :+: XDRBoolean.type :+: CNil
+    type CompositeType = XDRFixedLengthArray :+: XDRVariableLengthArray :+: XDROptional :+: CNil
+    type FlatType = PrimaryType :+: CompositeType
+    type NestedType = XDREnumeration :+: XDRStructBody :+: XDRUnion :+: CNil
+    type AllType = FlatType :+: NestedType
+
+    type TypeOrRef = Either[XDRIdentifierLiteral, AllType]
+
+    case class ASTNode(fields :Vector[(String, AllType)])
+    case class ASTree(
+                       typedefs :Vector[(String, TypeOrRef)],
+                       constdefs :Vector[(String, XDRConstantLiteral)]
+                     )
+
+//    def mkASTNode(node :AllType) :ASTNode = {
+//
+//    }
+
+    def reify(ast :ASTree)(implicit c:ScalaScaffold.Snippet) = {
+
     }
 
-    def processTypeDef(x :XDRTypeDef)(implicit c:ScalaScaffold.Snippet) = {
+    def transConst(x :XDRConstant) :(String, XDRConstantLiteral) = {
+      (x.name.ident, x.value)
+    }
+
+    def transType(x :XDRTypeDef) :(String, TypeOrRef) = {
       x match {
-        case XDRPlainTypedef(XDRPlainDeclaration(XDRIdentifierTypeSpecifier(XDRIdentifierLiteral(name)), XDRIdentifierLiteral(alias))) => {
-          val origtpe = TypeName(name)
-          val aliastpe = TypeName(alias)
-          c.declare(q"type $aliastpe = $origtpe")
-        }
-        case XDRPlainTypedef(XDRFixedLengthOpaque(XDRIdentifierLiteral(name), len)) => {
-          //todo value type
-          //todo codec type
-          //println(s"val $name:Vector[Byte] //fixlen: ${len.dig}")
-          //val lenref = c.refConstant(len) //todo
-        }
-        case XDRPlainTypedef(XDRVariableLengthOpaque(XDRIdentifierLiteral(name), olen)) => {
-          olen match {
-            case None => {
-              //println(s"val $name:Vector[Byte] //maxlen: -1")
-            }
-            case Some(len@XDRConstantValue(_)) => {
-              //println(s"val $name:Vector[Byte] //maxlen: ${len.dig}")
-            }
-          }
-        }
-        case XDREnumTypedef(XDRIdentifierLiteral(name), body) => {
-          reifyEnum(name, body)
-        }
-        case XDRStructTypedef(XDRIdentifierLiteral(name), body) => {
-          reifyStruct(name, body)
-        }
-        case XDRUnionTypedef(XDRIdentifierLiteral(name), body) => {
-          reifyUnion(name, body)
-        }
-        case _ => {
-          //todo
+        case XDRPlainTypedef(XDRPlainDeclaration(XDRIdentifierTypeSpecifier(alias), XDRIdentifierLiteral(name))) => {
+          (name, Left(alias))
         }
       }
+      //TODO TODO
+    }
+
+    def mkASTRoot(specs :XDRSpecification) :ASTree = {
+      val alldef = specs.defs.map(_.anydef).foldLeft(
+        Vector.empty[(String, TypeOrRef)],
+        Vector.empty[(String, XDRConstantLiteral)]
+      )((y, x) => {
+        x.fold(
+          z => (y._1 :+ transType(z), y._2),
+          z => (y._1, y._2 :+ transConst(z))
+        )
+      })
+      ASTree.tupled(alldef)
+    }
+
+    def addDefines(ns :String, specs :XDRSpecification) = {
+      implicit val src = ScalaScaffold.newSnippet(
+        q"",
+        Some(ns)
+      )
+      reify(mkASTRoot(specs))
+      src.mkAST
     }
   }
 }
 
 package object codegen {
 
-  def genAST(ns :String, spec :XDRSpecification) = {
-    implicit val src = ScalaScaffold.newSnippet(
-      q"",
-      Some(ns)
-    )
-    spec.defs.map(_.anydef).foreach( x => {
-      x.fold(
-        SemanticProcesser.processTypeDef(_),
-        SemanticProcesser.processConstDef(_)
-      )
-    })
-    src.mkAST
+  def genAST(ns :String, specs :XDRSpecification) = {
+    SemanticProcesser.addDefines(ns, specs)
   }
 
   def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
