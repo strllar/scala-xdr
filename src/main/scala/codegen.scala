@@ -4,6 +4,39 @@ import scala.collection.mutable.ListBuffer
 import scala.reflect.runtime.universe._
 import rfc4506._
 
+import shapeless._
+import shapeless.ops.coproduct.{Mapper}
+
+
+package object codegen {
+
+  type PrimaryType = XDRFixedLengthOpaque :+: XDRVariableLengthOpaque :+: XDRString :+: XDRVoid :+: XDRInteger.type :+: XDRUnsignedInteger.type :+: XDRHyper :+: XDRFloat.type  :+: XDRDouble.type  :+: XDRQuadruple.type :+: XDRBoolean.type :+: CNil
+  type CompositeType = XDRFixedLengthArray :+: XDRVariableLengthArray :+: XDROptional :+: CNil
+  type FlatType = PrimaryType :+: CompositeType :+: CNil
+  type NestedType = XDREnumeration :+: XDRStructure :+: XDRUnion :+: CNil
+  type AllType = FlatType :+: NestedType :+: CNil
+
+  type TypeOrRef = Either[XDRIdentifierLiteral, AllType]
+
+  case class ASTree(
+                     typedefs :Vector[(String, TypeOrRef)],
+                     constdefs :Vector[(String, XDRConstantLiteral)]
+                   )
+
+
+  //exposed util functions
+
+  def genAST(ns :String, specs :XDRSpecification) = {
+    SemanticProcesser.addDefines(ns, specs)
+  }
+
+  def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
+    scala.io.Source.fromIterable(
+      showCode(genAST(ns, spec)).toSeq
+    )
+  }
+}
+
 package codegen {
 
   object ScalaScaffold {
@@ -24,9 +57,11 @@ package codegen {
         vStack.append(tree)
       }
 
-      def reifyEnum = {}
-      def reifyStruct = {}
-      def reifyUnion = {}
+      def reifyEnum(x :XDREnumeration) = {
+        
+      }
+      def reifyStruct(x :XDRStructure) = {}
+      def reifyUnion(x :XDRUnion) = {}
     }
 
     def newSnippet(predefs :Tree, pkgname :Option[String]): Snippet = new Snippet(pkgname) {
@@ -49,22 +84,6 @@ package codegen {
   }
 
   object SemanticProcesser {
-
-    import shapeless._
-    import shapeless.ops.coproduct.{Mapper, Unifier}
-
-    type PrimaryType = XDRFixedLengthOpaque :+: XDRVariableLengthOpaque :+: XDRString :+: XDRVoid :+: XDRInteger.type :+: XDRUnsignedInteger.type :+: XDRHyper :+: XDRFloat.type  :+: XDRDouble.type  :+: XDRQuadruple.type :+: XDRBoolean.type :+: CNil
-    type CompositeType = XDRFixedLengthArray :+: XDRVariableLengthArray :+: XDROptional :+: CNil
-    type FlatType = PrimaryType :+: CompositeType :+: CNil
-    type NestedType = XDREnumeration :+: XDRStructure :+: XDRUnion :+: CNil
-    type AllType = FlatType :+: NestedType :+: CNil
-
-    type TypeOrRef = Either[XDRIdentifierLiteral, AllType]
-
-    case class ASTree(
-                       typedefs :Vector[(String, TypeOrRef)],
-                       constdefs :Vector[(String, XDRConstantLiteral)]
-                     )
 
     object scalaType extends Poly1 {
       implicit def casenil = at[CNil](_ => (name :String) => s"$name@nil")
@@ -115,6 +134,9 @@ package codegen {
         )
         )
       })
+
+      c.mkAST
+
     }
 
     def transType(x :XDRTypeSpecifier) :TypeOrRef = {
@@ -202,20 +224,6 @@ package codegen {
         Some(ns)
       )
       reify(mkASTRoot(specs))
-      src.mkAST
     }
-  }
-}
-
-package object codegen {
-
-  def genAST(ns :String, specs :XDRSpecification) = {
-    SemanticProcesser.addDefines(ns, specs)
-  }
-
-  def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
-    scala.io.Source.fromIterable(
-      showCode(genAST(ns, spec)).toSeq
-    )
   }
 }
