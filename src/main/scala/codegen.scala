@@ -4,6 +4,31 @@ import scala.collection.mutable.ListBuffer
 import scala.reflect.runtime.universe._
 import rfc4506._
 
+object Extractors {
+
+  type ValueOrRef = Either[XDRIdentifierLiteral, XDRConstantLiteral]
+
+  //TODO: use Liftable instead of dig?
+  implicit def extractConstant(const :XDRConstantLiteral) = new {
+    def dig = const match {
+      case DecimalConstant(x) => Integer.parseInt(x)
+      case HexadecimalConstant(x) => Integer.parseInt(x.drop(2), 16)
+      case OctalConstant(x) => Integer.parseInt(x, 8)
+    }
+  }
+
+  implicit def extractIdentifier(ident :XDRIdentifierLiteral) = new {
+    def dig = ident.ident
+  }
+
+  implicit def extracValue(v :XDRValue) = new {
+    def dig :ValueOrRef = v match {
+      case XDRConstantValue(value) => Right(value)
+      case XDRIdentifierValue(ident) => Left(ident)
+    }
+  }
+}
+
 import shapeless._
 import shapeless.ops.coproduct.{Mapper}
 
@@ -40,104 +65,122 @@ package object codegen {
 package codegen {
 
   object ScalaScaffold {
+    import Extractors._
+
+    trait scalaType {
+      def defineAs(name :String) :Option[Tree]
+      def declareAs(name :String) :Option[Tree]
+//      def companionName() :String
+    }
+    class DummyScalaType extends scalaType {
+      def defineAs(name :String) = None
+      def declareAs(name :String) = None
+    }
+
+    object scalaMapping extends Poly1 {
+      implicit def casenil = at[CNil](_ => new DummyScalaType)
+      implicit def caseEnum = at[XDREnumeration](_ => new DummyScalaType)
+      implicit def caseStruct = at[XDRStructure](_ => new DummyScalaType)
+      implicit def caseUnion = at[XDRUnion](_ => new DummyScalaType)
+      implicit def caseArrayF = at[XDRFixedLengthArray](_ => new DummyScalaType)
+      implicit def caseArrayV = at[XDRVariableLengthArray](_ => new DummyScalaType)
+      implicit def caseOption = at[XDROptional](_ => new DummyScalaType)
+
+      implicit def caseOpaqueF = at[XDRFixedLengthOpaque](_ => new DummyScalaType)
+      implicit def caseOpaqueV = at[XDRVariableLengthOpaque](_ => new DummyScalaType)
+      implicit def caseString = at[XDRString](_ => new DummyScalaType)
+      implicit def caseVoid = at[XDRVoid](_ => new DummyScalaType)
+      implicit def caseInt = at[XDRInteger.type](_ => new DummyScalaType)
+      implicit def caseUInt = at[XDRUnsignedInteger.type](_ => new DummyScalaType)
+      implicit def caseHyper = at[XDRHyper](x => new DummyScalaType)
+      implicit def caseFloat = at[XDRFloat.type](_ => new DummyScalaType)
+      implicit def caseDouble = at[XDRDouble.type](_ => new DummyScalaType)
+      implicit def caseQuad = at[XDRQuadruple.type](_ => new DummyScalaType)
+      implicit def caseBoolean = at[XDRBoolean.type](_ => new DummyScalaType)
+
+      implicit def caseNested(implicit mapper: Mapper[scalaMapping.type, NestedType]) = at[NestedType](
+        _.map(scalaMapping)
+      )
+      implicit def casePrimary(implicit mapper: Mapper[scalaMapping.type, PrimaryType]) = at[PrimaryType](
+        _.map(scalaMapping)
+      )
+      implicit def caseComposite(implicit mapper: Mapper[scalaMapping.type, CompositeType]) = at[CompositeType](
+        _.map(scalaMapping)
+      )
+      implicit def caseFlat(implicit mapper: Mapper[scalaMapping.type, FlatType]) = at[FlatType](
+        _.flatMap(scalaMapping)
+      )
+
+      def from(x :AllType) :scalaType = {
+        x.flatMap(scalaMapping).unify
+      }
+    }
 
     class Snippet(val pkgname :Option[String]) {
-      val vStack = ListBuffer.empty[Tree]
 
-      def mkAST = {
+      val constStack = ListBuffer.empty[Tree]
+      val declStack = ListBuffer.empty[Tree]
+      val defStack = ListBuffer.empty[Tree]
+
+      def reifyAST(ast :ASTree) = {
+
+        ast.constdefs.foreach(cd => defineConst(cd._1, cd._2))
+        declStack ++= ast.typedefs.map(td => reify(td._1, td._2)).collect({case Some(t) => t}) //TBD
+
         pkgname.map( pn => {
           val pname = TermName(pn)
           q"""
-            package $pname {..$vStack}
+            package object $pname {
+            ..$constStack
+            ..$declStack
+            }
+            package $pname {
+            ..$defStack
+            }
             """
-        }).getOrElse(q"..$vStack")
+        }).getOrElse(q"..${constStack ++ declStack ++ defStack}")
       }
 
-      def declare(tree :Tree): Unit = {
-        vStack.append(tree)
+      def defineConst(name :String, value :XDRConstantLiteral): Unit = {
+        constStack.append(q"val ${TermName(name)} :Int = ${Constant(value.dig)}")
       }
 
-      def reifyEnum(x :XDREnumeration) = {
-        
+      def reify(n :String, x :TypeOrRef) :Option[Tree] = {
+        x.fold(
+          (idref) => Some(q"type ${TypeName(n)} = ${TypeName(idref.dig)}"),
+          scalaMapping.from(_).defineAs(n)
+        )
+
       }
-      def reifyStruct(x :XDRStructure) = {}
-      def reifyUnion(x :XDRUnion) = {}
+      def reifyEnum(n :String, x :XDREnumeration) :Tree = {
+//        x.body.items.map(kv => {
+//          kv._1.dig
+//          kv._2.dig.fold(
+//          idref => q"${TermName(idref.dig)}",
+//          value => q"${Constant(value)}"
+//          )
+//        })
+
+        q"object ${TermName(n)}"
+      }
+      def reifyStruct(n :String, x :XDRStructure) :Tree = {
+        val innerdefs = x.body.components.map(SemanticProcesser.transDecl(_)).collect({
+          case (s, Left(id)) => {}
+          case (s, Right(children)) => {
+            
+          }
+        })
+        q"object ${TermName(n)} {}"
+      }
+      def reifyUnion(n :String, x :XDRUnion) :Tree = {
+        q"object ${TermName(n)}"
+      }
     }
 
-    def newSnippet(predefs :Tree, pkgname :Option[String]): Snippet = new Snippet(pkgname) {
-      if (predefs.isEmpty == false) vStack.append(predefs)
-    }
-  }
-
-  object Extractors {
-    //TODO: use Liftable instead of dig?
-    implicit def extractConstant(const :XDRConstantValue) = new {
-      def dig = const.value match {
-        case DecimalConstant(x) => Integer.parseInt(x)
-        case HexadecimalConstant(x) => Integer.parseInt(x.drop(2), 16)
-        case OctalConstant(x) => Integer.parseInt(x, 8)
-      }
-    }
-    implicit def extractIdentifier(ident :XDRIdentifierValue) = new {
-      def dig = ident.ident.ident
-    }
+    def newSnippet(pkgname :Option[String]): Snippet = new Snippet(pkgname)
   }
 
   object SemanticProcesser {
-
-    object scalaType extends Poly1 {
-      implicit def casenil = at[CNil](_ => (name :String) => s"$name@nil")
-      implicit def caseEnum = at[XDREnumeration](_ => (name :String) => s"$name@enum")
-      implicit def caseStruct = at[XDRStructure](_ => (name :String) => s"$name@struct")
-      implicit def caseUnion = at[XDRUnion](_ => (name :String) => s"$name@union")
-      implicit def caseArrayF = at[XDRFixedLengthArray](_ => (name :String) => s"$name@array[]")
-      implicit def caseArrayV = at[XDRVariableLengthArray](_ => (name :String) => s"$name@array<>")
-      implicit def caseOption = at[XDROptional](_ => (name :String) => s"$name*")
-
-      implicit def caseOpaqueF = at[XDRFixedLengthOpaque](_ => (name :String) => s"$name@byte[]")
-      implicit def caseOpaqueV = at[XDRVariableLengthOpaque](_ => (name :String) => s"$name@byte<>")
-      implicit def caseString = at[XDRString](_ => (name :String) => s"$name@string")
-      implicit def caseVoid = at[XDRVoid](_ => (name :String) => s"$name@void")
-      implicit def caseInt = at[XDRInteger.type](_ => (name :String) => s"$name@int")
-      implicit def caseUInt = at[XDRUnsignedInteger.type](_ => (name :String) => s"$name@uint")
-      implicit def caseHyper = at[XDRHyper](x => (name :String) => s"$name@${if (x.signed) "" else "u"}hyper")
-      implicit def caseFloat = at[XDRFloat.type](_ => (name :String) => s"$name@float")
-      implicit def caseDouble = at[XDRDouble.type](_ => (name :String) => s"$name@double")
-      implicit def caseQuad = at[XDRQuadruple.type](_ => (name :String) => s"$name@quad")
-      implicit def caseBoolean = at[XDRBoolean.type](_ => (name :String) => s"$name@bool")
-
-      implicit def caseNested(implicit mapper: Mapper[scalaType.type, NestedType]) = at[NestedType](
-        _.map(scalaType)
-      )
-      implicit def casePrimary(implicit mapper: Mapper[scalaType.type, PrimaryType]) = at[PrimaryType](
-        _.map(scalaType)
-      )
-      implicit def caseComposite(implicit mapper: Mapper[scalaType.type, CompositeType]) = at[CompositeType](
-        _.map(scalaType)
-      )
-      implicit def caseFlat(implicit mapper: Mapper[scalaType.type, FlatType]) = at[FlatType](
-        _.flatMap(scalaType)
-      )
-
-      def convert(x :AllType, s :String) = {
-        x.flatMap(scalaType).unify.apply(s)
-      }
-    }
-
-    def reify(ast :ASTree)(implicit c:ScalaScaffold.Snippet) = {
-
-
-      ast.typedefs.foreach((x) => {
-        println(x._2.fold(
-          _.ident + "->" + x._1,
-          scalaType.convert(_, x._1)
-        )
-        )
-      })
-
-      c.mkAST
-
-    }
 
     def transType(x :XDRTypeSpecifier) :TypeOrRef = {
       x match {
@@ -219,11 +262,10 @@ package codegen {
     }
 
     def addDefines(ns :String, specs :XDRSpecification) = {
-      implicit val src = ScalaScaffold.newSnippet(
-        q"",
+      val src = ScalaScaffold.newSnippet(
         Some(ns)
       )
-      reify(mkASTRoot(specs))
+      src.reifyAST(mkASTRoot(specs))
     }
   }
 }
