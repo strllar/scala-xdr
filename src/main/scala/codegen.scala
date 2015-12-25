@@ -78,15 +78,15 @@ package codegen {
     }
 
     class XDREnumType(body :XDREnumBody) extends scalaType {
-      def defineAs(name :String) = reifyEnum(name, body).children
+      def defineAs(name :String) = reifyEnum(name, body).children.init
       def declareAs(name :String) = q""
     }
     class XDRStructType(body :XDRStructBody) extends scalaType {
-      def defineAs(name :String) = reifyStruct(name ,body).children
+      def defineAs(name :String) = reifyStruct(name ,body).children.init
       def declareAs(name :String) = q""
     }
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
-      def defineAs(name :String) = reifyUnion(name, body).children
+      def defineAs(name :String) = reifyUnion(name, body).children.init
       def declareAs(name :String) = q""
     }
 
@@ -132,13 +132,13 @@ package codegen {
     def expandNested(n :String, anyType: AnyType) :List[Tree] = {
       anyType.select[NestedType].toList.flatMap( nt =>
         nt.select[XDREnumeration].map(enum => {
-          reifyEnum(n, enum.body).children
+          reifyEnum(n, enum.body).children.init
         }).getOrElse(
           nt.select[XDRStructure].map(struct => {
-            reifyStruct(n, struct.body).children
+            reifyStruct(n, struct.body).children.init
           }).getOrElse(
             nt.select[XDRUnion].toList.flatMap(union => {
-              reifyUnion(n, union.body).children
+              reifyUnion(n, union.body).children.init
             })
           )
         )
