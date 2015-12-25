@@ -69,12 +69,12 @@ package codegen {
 
     trait scalaType {
       def defineAs(name :String) :Option[Tree]
-      def declareAs(name :String) :Option[Tree]
+      def declareAs(name :String) :Tree
 //      def companionName() :String
     }
     class DummyScalaType extends scalaType {
       def defineAs(name :String) = None
-      def declareAs(name :String) = None
+      def declareAs(name :String) = q""
     }
 
     object scalaMapping extends Poly1 {
@@ -119,40 +119,69 @@ package codegen {
     class Snippet(val pkgname :Option[String]) {
 
       val constStack = ListBuffer.empty[Tree]
-      val declStack = ListBuffer.empty[Tree]
-      val defStack = ListBuffer.empty[Tree]
+      val pkgStack = ListBuffer.empty[Tree]
+      val pobjStack = ListBuffer.empty[Tree]
 
       def reifyAST(ast :ASTree) = {
 
         ast.constdefs.foreach(cd => defineConst(cd._1, cd._2))
-        declStack ++= ast.typedefs.map(td => reify(td._1, td._2)).collect({case Some(t) => t}) //TBD
+        val (pobjstats, pkgstats) = ast.typedefs.map(td => reifyType(td._1, td._2)).
+          foldLeft(List.empty[Tree], List.empty[Tree])(
+            (acc, curr) => {
+              curr.fold(
+                (stat) => (stat +: acc._1, acc._2),
+                {
+                  case Some(stat) => (acc._1, stat +: acc._2)
+                  case None => acc
+                }
+              )
+            }
+          )
+        pkgStack ++= pkgstats.reverse
+        pobjStack ++= pobjstats.reverse
 
         pkgname.map( pn => {
           val pname = TermName(pn)
           q"""
             package object $pname {
             ..$constStack
-            ..$declStack
+            ..$pobjStack
             }
             package $pname {
-            ..$defStack
+            ..$pkgStack
             }
             """
-        }).getOrElse(q"..${constStack ++ declStack ++ defStack}")
+        }).getOrElse(q"..${constStack ++ pobjStack ++ pkgStack}")
       }
 
       def defineConst(name :String, value :XDRConstantLiteral): Unit = {
         constStack.append(q"val ${TermName(name)} :Int = ${Constant(value.dig)}")
       }
 
-      def reify(n :String, x :TypeOrRef) :Option[Tree] = {
-        x.fold(
-          (idref) => Some(q"type ${TypeName(n)} = ${TypeName(idref.dig)}"),
-          scalaMapping.from(_).defineAs(n)
+      def expandNested(n :String, anyType: AnyType) = {
+        anyType.select[NestedType].map( nt =>
+          nt.select[XDREnumeration].map(enum => {
+            reifyEnum(enum)
+          }).getOrElse(
+            nt.select[XDRStructure].map(struct => {
+              reifyStruct(struct)
+            }).getOrElse(
+              nt.select[XDRUnion].map((union) => {
+                reifyUnion(union)
+              }).get
+            )
+          )
         )
-
       }
-      def reifyEnum(n :String, x :XDREnumeration) :Tree = {
+
+      def reifyType(n :String, x :TypeOrRef) :Either[Tree, Option[Tree]] = {
+        x.fold(
+          (idref) => Left(q"type ${TypeName(n)} = ${TypeName(idref.dig)}"),
+          (tpe) => Right(scalaMapping.from(tpe).defineAs(n))
+        )
+      }
+
+      def reifyEnum(x :XDREnumeration) :Tree = {
 //        x.body.items.map(kv => {
 //          kv._1.dig
 //          kv._2.dig.fold(
@@ -161,19 +190,19 @@ package codegen {
 //          )
 //        })
 
-        q"object ${TermName(n)}"
+        q"{}"
       }
-      def reifyStruct(n :String, x :XDRStructure) :Tree = {
+      def reifyStruct(x :XDRStructure) :Tree = {
         val innerdefs = x.body.components.map(SemanticProcesser.transDecl(_)).collect({
           case (s, Left(id)) => {}
           case (s, Right(children)) => {
 
           }
         })
-        q"object ${TermName(n)} {}"
+        q"{}"
       }
-      def reifyUnion(n :String, x :XDRUnion) :Tree = {
-        q"object ${TermName(n)}"
+      def reifyUnion(x :XDRUnion) :Tree = {
+        q"{}"
       }
     }
 

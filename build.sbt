@@ -3,6 +3,7 @@ lazy val xdrGen = project.in(file(".")).
     organization := "org.strllar",
     scalaVersion := "2.11.7",
     version := "0.1-SNAPSHOT",
+    libraryDependencies += "com.chuusai" % "shapeless_2.11" % "2.2.5",
     libraryDependencies += "org.parboiled" %% "parboiled" % "2.1.0",
     libraryDependencies +=  "org.scala-lang" % "scala-reflect" % scalaVersion.value,
     resolvers += Resolver.url("inthenow-releases", url("http://dl.bintray.com/inthenow/releases"))(Resolver.ivyStylePatterns),
