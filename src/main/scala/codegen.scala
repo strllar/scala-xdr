@@ -39,9 +39,9 @@ package object codegen {
   type CompositeType = XDRFixedLengthArray :+: XDRVariableLengthArray :+: XDROptional :+: CNil
   type FlatType = PrimaryType :+: CompositeType :+: CNil
   type NestedType = XDREnumeration :+: XDRStructure :+: XDRUnion :+: CNil
-  type AllType = FlatType :+: NestedType :+: CNil
+  type AnyType = FlatType :+: NestedType :+: CNil
 
-  type TypeOrRef = Either[XDRIdentifierLiteral, AllType]
+  type TypeOrRef = Either[XDRIdentifierLiteral, AnyType]
 
   case class ASTree(
                      typedefs :Vector[(String, TypeOrRef)],
@@ -111,7 +111,7 @@ package codegen {
         _.flatMap(scalaMapping)
       )
 
-      def from(x :AllType) :scalaType = {
+      def from(x :AnyType) :scalaType = {
         x.flatMap(scalaMapping).unify
       }
     }
@@ -167,7 +167,7 @@ package codegen {
         val innerdefs = x.body.components.map(SemanticProcesser.transDecl(_)).collect({
           case (s, Left(id)) => {}
           case (s, Right(children)) => {
-            
+
           }
         })
         q"object ${TermName(n)} {}"
@@ -185,16 +185,16 @@ package codegen {
     def transType(x :XDRTypeSpecifier) :TypeOrRef = {
       x match {
         case XDRIdentifierTypeSpecifier(alias) => Left(alias)
-        case x@XDRInteger => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDRUnsignedInteger => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDRHyper(_) => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDRFloat => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDRDouble => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDRQuadruple => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDRBoolean => Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
-        case x@XDREnumeration(_) => Right(Coproduct[AllType](Coproduct[NestedType](x)))
-        case x@XDRStructure(_) => Right(Coproduct[AllType](Coproduct[NestedType](x)))
-        case x@XDRUnion(_) => Right(Coproduct[AllType](Coproduct[NestedType](x)))
+        case x@XDRInteger => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDRUnsignedInteger => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDRHyper(_) => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDRFloat => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDRDouble => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDRQuadruple => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDRBoolean => Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x))))
+        case x@XDREnumeration(_) => Right(Coproduct[AnyType](Coproduct[NestedType](x)))
+        case x@XDRStructure(_) => Right(Coproduct[AnyType](Coproduct[NestedType](x)))
+        case x@XDRUnion(_) => Right(Coproduct[AnyType](Coproduct[NestedType](x)))
       }
     }
 
@@ -204,25 +204,25 @@ package codegen {
           (name, transType(x))
         }
         case x@XDRFixedLengthArray(_, XDRIdentifierLiteral(name), _) => {
-          (name, Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[CompositeType](x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[CompositeType](x)))))
         }
         case x@XDRVariableLengthArray(_, XDRIdentifierLiteral(name), _) => {
-          (name, Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[CompositeType](x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[CompositeType](x)))))
         }
         case x@XDRFixedLengthOpaque(XDRIdentifierLiteral(name), _) => {
-          (name, Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
         }
         case x@XDRVariableLengthOpaque(XDRIdentifierLiteral(name), _) => {
-          (name, Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
         }
         case x@XDRString(XDRIdentifierLiteral(name), _) => {
-          (name, Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
         }
         case x@XDROptional(_, XDRIdentifierLiteral(name)) => {
-          (name, Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[CompositeType](x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[CompositeType](x)))))
         }
         case x@XDRVoid() => {
-          ("void", Right(Coproduct[AllType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
+          ("void", Right(Coproduct[AnyType](Coproduct[FlatType](Coproduct[PrimaryType](x)))))
         }
       }
     }
@@ -237,13 +237,13 @@ package codegen {
           transDecl(x)
         }
         case XDREnumTypedef(XDRIdentifierLiteral(name), x) => {
-          (name, Right(Coproduct[AllType](Coproduct[NestedType](XDREnumeration(x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[NestedType](XDREnumeration(x)))))
         }
         case XDRStructTypedef(XDRIdentifierLiteral(name), x) => {
-          (name, Right(Coproduct[AllType](Coproduct[NestedType](XDRStructure(x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[NestedType](XDRStructure(x)))))
         }
         case XDRUnionTypedef(XDRIdentifierLiteral(name), x) => {
-          (name, Right(Coproduct[AllType](Coproduct[NestedType](XDRUnion(x)))))
+          (name, Right(Coproduct[AnyType](Coproduct[NestedType](XDRUnion(x)))))
         }
       }
     }
