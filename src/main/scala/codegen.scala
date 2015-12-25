@@ -68,25 +68,25 @@ package codegen {
     import Extractors._
 
     trait scalaType {
-      def defineAs(name :String) :Option[Tree]
+      def defineAs(name :String) :List[Tree]
       def declareAs(name :String) :Tree
 //      def companionName() :String
     }
     class DummyScalaType extends scalaType {
-      def defineAs(name :String) = None
+      def defineAs(name :String) = List.empty[Tree]
       def declareAs(name :String) = q""
     }
 
     class XDREnumType(body :XDREnumBody) extends scalaType {
-      def defineAs(name :String) = Some(reifyEnum(name, body))
+      def defineAs(name :String) = reifyEnum(name, body).children
       def declareAs(name :String) = q""
     }
     class XDRStructType(body :XDRStructBody) extends scalaType {
-      def defineAs(name :String) = Some(reifyStruct(name ,body))
+      def defineAs(name :String) = reifyStruct(name ,body).children
       def declareAs(name :String) = q""
     }
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
-      def defineAs(name :String) = Some(reifyUnion(name, body))
+      def defineAs(name :String) = reifyUnion(name, body).children
       def declareAs(name :String) = q""
     }
 
@@ -129,16 +129,16 @@ package codegen {
       }
     }
 
-    def expandNested(n :String, anyType: AnyType) :Option[Tree] = {
-      anyType.select[NestedType].flatMap( nt =>
+    def expandNested(n :String, anyType: AnyType) :List[Tree] = {
+      anyType.select[NestedType].toList.flatMap( nt =>
         nt.select[XDREnumeration].map(enum => {
-          Some(reifyEnum(n, enum.body))
+          reifyEnum(n, enum.body).children
         }).getOrElse(
           nt.select[XDRStructure].map(struct => {
-            Some(reifyStruct(n, struct.body))
+            reifyStruct(n, struct.body).children
           }).getOrElse(
-            nt.select[XDRUnion].map(union => {
-              reifyUnion(n, union.body)
+            nt.select[XDRUnion].toList.flatMap(union => {
+              reifyUnion(n, union.body).children
             })
           )
         )
@@ -162,7 +162,7 @@ package codegen {
       cq"${item._2} => Attempt.successful(${TermName(item._1)})"
       ) :+ cq"""x@_ => Attempt.failure(Err(s"unknow enum value $$x"))"""
 
-      q"""
+      q"""{
           object ${TermName(n)} {
           abstract class Enum(val value :Int)
           ..$itemstats
@@ -170,7 +170,7 @@ package codegen {
           case ..$codeccases
           }, ${pq"_"}.value)
           }
-        """
+        }"""
     }
 
     def reifyStruct(n :String, x :XDRStructBody) :Tree = {
@@ -179,11 +179,18 @@ package codegen {
 
         }
       })
-      q"object ${TermName(n)} {}"
+      q"""{
+         object ${TermName(n)} {
+         case class Components(destination :AccountID.Union, startingBalance :int64)
+         }
+         class ${TypeName(n)}(val ${TermName("*")} :${TermName(n)}.Components)
+        }"""
     }
 
     def reifyUnion(n :String, x :XDRUnionBody) :Tree = {
-      q"object ${TermName(n)} {}"
+      q"""{
+          object ${TermName(n)} {}
+          }"""
     }
 
 
@@ -200,16 +207,13 @@ package codegen {
           foldLeft(List.empty[Tree], List.empty[Tree])(
             (acc, curr) => {
               curr.fold(
-                (stat) => (stat +: acc._1, acc._2),
-                {
-                  case Some(stat) => (acc._1, stat +: acc._2)
-                  case None => acc
-                }
+                (stat) => (acc._1 :+ stat , acc._2),
+                (stats) => (acc._1, acc._2 ++ stats)
               )
             }
           )
-        pkgStack ++= pkgstats.reverse
-        pobjStack ++= pobjstats.reverse
+        pkgStack ++= pkgstats
+        pobjStack ++= pobjstats
 
         pkgname.map( pn => {
           val pname = TermName(pn)
@@ -229,7 +233,7 @@ package codegen {
         constStack.append(q"val ${TermName(name)} :Int = ${Constant(value.dig)}")
       }
 
-      def reifyType(n :String, x :TypeOrRef) :Either[Tree, Option[Tree]] = {
+      def reifyType(n :String, x :TypeOrRef) :Either[Tree, List[Tree]] = {
         x.fold(
           (idref) => Left(q"type ${TypeName(n)} = ${TypeName(idref.dig)}"),
           (tpe) => Right(scalaMapping.from(tpe).defineAs(n))
