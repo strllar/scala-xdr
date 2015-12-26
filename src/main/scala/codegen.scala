@@ -65,7 +65,7 @@ package object codegen {
   //exposed util functions
 
   def genAST(ns :String, specs :XDRSpecification) = {
-    SemanticProcesser.addDefines(ns, specs)
+    SemanticProcesser.transSpec(ns, specs)
   }
 
   def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
@@ -81,27 +81,27 @@ package codegen {
     import Extractors._
 
     trait scalaType {
-      def defineAs(name :String) :List[Tree]
+      def defineAs(name :String) :Tree
       def declareAs(name :String) :Typed
       //def codecAs(name :String) :TermName
 
     }
     class DummyScalaType extends scalaType {
-      def defineAs(name :String) = List.empty[Tree]
-      def declareAs(name :String) = q"${TermName(name)} :DummyType"
+      def defineAs(name :String) = q"{}"
+      def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyType")
     }
 
     class XDREnumType(body :XDREnumBody) extends scalaType {
-      def defineAs(name :String) = reifyEnum(name, body).children.init
-      def declareAs(name :String) = q"${TermName(name)} :DummyEnum"
+      def defineAs(name :String) = reifyEnum(name, body)
+      def declareAs(name :String) =  Typed(q"${TermName(name)}", tq"DummyEnum")
     }
     class XDRStructType(body :XDRStructBody) extends scalaType {
-      def defineAs(name :String) = reifyStruct(name ,body).children.init
-      def declareAs(name :String) = q"${TermName(name)} :DummyStruct"
+      def defineAs(name :String) = reifyStruct(name ,body)
+      def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyStruct")
     }
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
-      def defineAs(name :String) = reifyUnion(name, body).children.init
-      def declareAs(name :String) = q"${TermName(name)} :DummyUnion"
+      def defineAs(name :String) = reifyUnion(name, body)
+      def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyUnion")
     }
 
     object scalaMapping extends Poly1 {
@@ -144,33 +144,38 @@ package codegen {
     }
 
     def expandNested(n :String, anyType: AnyType) :List[Tree] = {
-      anyType.select[NestedType].toList.flatMap( nt =>
-        nt.select[XDREnumeration].map(enum => {
-          reifyEnum(n, enum.body).children.init
-        }).getOrElse(
-          nt.select[XDRStructure].map(struct => {
-            reifyStruct(n, struct.body).children.init
+      val shallow_defs =
+        anyType.select[NestedType].toList.flatMap( nt =>
+          nt.select[XDREnumeration].map(enum => {
+            reifyEnum(n, enum.body).children.init
           }).getOrElse(
-            nt.select[XDRUnion].toList.flatMap(union => {
-              reifyUnion(n, union.body).children.init
-            })
+            nt.select[XDRStructure].map(struct => {
+              reifyStruct(n, struct.body).children.init
+            }).getOrElse(
+              nt.select[XDRUnion].toList.flatMap(union => {
+                reifyUnion(n, union.body).children.init
+              })
+            )
           )
         )
-      ) ++
-      anyType.select[FlatType].flatMap(
-      _.select[CompositeType]
-      ).toList.flatMap({
-        //todo
-        case XDRFixedLengthArray(tpe, _, _) => {
-          SemanticProcesser.transType(tpe).fold(
-          _ => list.empty[Tree],
-            expandNested(n, _)
-          )
+      shallow_defs
+      //val more_defs =
 
-        }
-        case XDRVariableLengthArray(tpe, _, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
-        case XDROptional(tpe, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
-      })
+//      ++
+//      anyType.select[FlatType].flatMap(
+//      _.select[CompositeType]
+//      ).toList.flatMap({
+//        //todo
+//        case XDRFixedLengthArray(tpe, _, _) => {
+//          SemanticProcesser.transType(tpe).fold(
+//          _ => list.empty[Tree],
+//            expandNested(n, _)
+//          )
+//
+//        }
+//        case XDRVariableLengthArray(tpe, _, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
+//        case XDROptional(tpe, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
+//      })
     }
 
 
@@ -262,17 +267,15 @@ package codegen {
       val pkgStack = ListBuffer.empty[Tree]
       val pobjStack = ListBuffer.empty[Tree]
 
-      def reifyAST(ast :ASTree) = {
+      def reifyAST(implicit ast :ASTree) = {
 
         ast.constdefs.foreach(cd => defineConst(cd._1, cd._2))
         val (pobjstats, pkgstats) = ast.typedefs.map(td => reifyType(td._1, td._2)).
           foldLeft(List.empty[Tree], List.empty[Tree])(
-            (acc, curr) => {
-              curr.fold(
-                (stat) => (acc._1 :+ stat , acc._2),
-                (stats) => (acc._1, acc._2 ++ stats)
+            (acc, curr) => (
+              if (curr._1.children.length > 1) acc._1 ++ curr._1.children.init else acc._1 ,
+              if (curr._2.children.length > 1) acc._2 ++ curr._2.children.init else acc._2
               )
-            }
           )
         pkgStack ++= pkgstats
         pobjStack ++= pobjstats
@@ -291,14 +294,14 @@ package codegen {
         }).getOrElse(q"..${constStack ++ pobjStack ++ pkgStack}")
       }
 
-      def defineConst(name :String, value :XDRConstantLiteral): Unit = {
+      def defineConst(name :String, value :XDRConstantLiteral)(implicit ast :ASTree): Unit = {
         constStack.append(q"val ${TermName(name)} :Int = ${Constant(value.dig)}")
       }
 
-      def reifyType(n :String, x :TypeOrRef) :Either[Tree, List[Tree]] = {
+      def reifyType(n :String, x :TypeOrRef)(implicit ast :ASTree) :(Tree, Tree) = {
         x.fold(
-          (idref) => Left(q"type ${TypeName(n)} = ${TypeName(idref.dig)}"),
-          (tpe) => Right(scalaMapping.from(tpe).defineAs(n))
+          (idref) => (q"{type ${TypeName(n)} = ${TypeName(idref.dig)}}", q""),
+          (tpe) => (q"", scalaMapping.from(tpe).defineAs(n))
         )
       }
 
@@ -308,6 +311,18 @@ package codegen {
   }
 
   object SemanticProcesser {
+
+    def resolveType(name :String)(implicit ast :ASTree) :Option[(String, AnyType)] = {
+      val found = ast.typedefs.find(_._1 == name)
+      found.flatMap(_._2.fold(
+        refid => resolveType(refid.ident),
+        Some(name, _)
+      ))
+    }
+
+    def resolveConst(name :String)(implicit ast :ASTree) :Option[XDRConstantLiteral] = {
+      ast.constdefs.find(_._1 == name).map(_._2)
+    }
 
     def transType(x :XDRTypeSpecifier) :TypeOrRef = {
       x match {
@@ -388,7 +403,7 @@ package codegen {
       ASTree.tupled(alldef)
     }
 
-    def addDefines(ns :String, specs :XDRSpecification) = {
+    def transSpec(ns :String, specs :XDRSpecification) = {
       val src = ScalaScaffold.newSnippet(
         Some(ns)
       )
