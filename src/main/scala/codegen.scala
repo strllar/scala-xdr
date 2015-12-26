@@ -27,6 +27,19 @@ object Extractors {
       case XDRIdentifierValue(ident) => Left(ident)
     }
   }
+
+  implicit def extractCase(c :XDRCaseSpec) = new {
+    val allstr = for (
+      v <- c.values;
+      str = extracValue(v).dig.fold(
+      _.ident,
+      _.dig.toString
+      )
+    ) yield str
+
+    //def ident = TermName("discriminant_" + allstr.mkString("_")
+    def ident = allstr.mkString("_")
+  }
 }
 
 import shapeless._
@@ -69,25 +82,26 @@ package codegen {
 
     trait scalaType {
       def defineAs(name :String) :List[Tree]
-      def declareAs(name :String) :Tree
-//      def companionName() :String
+      def declareAs(name :String) :Typed
+      //def codecAs(name :String) :TermName
+
     }
     class DummyScalaType extends scalaType {
       def defineAs(name :String) = List.empty[Tree]
-      def declareAs(name :String) = q""
+      def declareAs(name :String) = q"${TermName(name)} :DummyType"
     }
 
     class XDREnumType(body :XDREnumBody) extends scalaType {
       def defineAs(name :String) = reifyEnum(name, body).children.init
-      def declareAs(name :String) = q""
+      def declareAs(name :String) = q"${TermName(name)} :DummyEnum"
     }
     class XDRStructType(body :XDRStructBody) extends scalaType {
       def defineAs(name :String) = reifyStruct(name ,body).children.init
-      def declareAs(name :String) = q""
+      def declareAs(name :String) = q"${TermName(name)} :DummyStruct"
     }
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
       def defineAs(name :String) = reifyUnion(name, body).children.init
-      def declareAs(name :String) = q""
+      def declareAs(name :String) = q"${TermName(name)} :DummyUnion"
     }
 
     object scalaMapping extends Poly1 {
@@ -142,7 +156,21 @@ package codegen {
             })
           )
         )
-      )
+      ) ++
+      anyType.select[FlatType].flatMap(
+      _.select[CompositeType]
+      ).toList.flatMap({
+        //todo
+        case XDRFixedLengthArray(tpe, _, _) => {
+          SemanticProcesser.transType(tpe).fold(
+          _ => list.empty[Tree],
+            expandNested(n, _)
+          )
+
+        }
+        case XDRVariableLengthArray(tpe, _, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
+        case XDROptional(tpe, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
+      })
     }
 
 
@@ -174,22 +202,56 @@ package codegen {
     }
 
     def reifyStruct(n :String, x :XDRStructBody) :Tree = {
-      val innerdefs = x.components.map(SemanticProcesser.transDecl(_)).collect({
-        case (s, Right(children)) => {
 
+      val components = x.components.map(SemanticProcesser.transDecl(_))
+
+      val innerdefs = components.collect({
+        case (s, Right(children)) => {
+          expandNested(s"anon_$s", children)
+        }
+      }).flatten
+
+      val decls = components.map({
+        case (s, Left(x)) => q"${TermName(s)} :${TypeName(x.dig)}"
+        case (s, Right(x)) => {
+          val tpe = scalaMapping.from(x)
+          tpe.declareAs(s)
         }
       })
+
+      val codec = q"${TermName("XDROptional")}(AccountID.codec) :: Operation.Union_body.codec"
+      //components.foldLeft(
+
+
       q"""{
          object ${TermName(n)} {
-         case class Components(destination :AccountID.Union, startingBalance :int64)
+         ..$innerdefs
+         case class Components(..$decls)
+         type Struct = ${TypeName(n)}
+         implicit def codec :Codec[Struct] = (
+         $codec
+         ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
          }
          class ${TypeName(n)}(val ${TermName("*")} :${TermName(n)}.Components)
         }"""
     }
 
     def reifyUnion(n :String, x :XDRUnionBody) :Tree = {
+      val arms = x.arms.map(arm => SemanticProcesser.transDecl(arm.declaration)) ++ x.defdecl.map(identity).toSeq
+
+//      val innerdefs = arms.collect({
+//        case (s, Right(children)) => {
+//          expandNested(s"discriminant_$s", children)
+//        }
+//      }).flatten
+
       q"""{
-          object ${TermName(n)} {}
+          object ${TermName(n)} {
+          trait Arm {
+          val v :Int
+          }
+          type Union = discriminant_0 :+: CNil
+          }
           }"""
     }
 
