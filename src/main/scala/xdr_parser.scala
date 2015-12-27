@@ -165,7 +165,9 @@ object xdrGenApp extends App {
         |import shapeless._
       """.stripMargin)
     outfile.println("")
-    org.strllar.scalaxdr.codegen.genScala("xdr_generated", XDRSpecification(defs)).getLines.foreach(outfile.println)
+    org.strllar.scalaxdr.codegen.genScala("xdr_generated", XDRSpecification(defs)).
+      getLines.map(_.replace("val *:", "val * :")).
+      foreach(outfile.println)
     outfile.close()
     //org.strllar.scalaxdr.codegen.genScala(ns, XDRSpecification(defs)).getLines.foreach(println)
   }
