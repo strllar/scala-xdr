@@ -147,57 +147,26 @@ package codegen {
     class Snippet(val pkgname :Option[String]) {
       import Extractors._
 
-      val constStack = ListBuffer.empty[Tree]
-      val pkgStack = ListBuffer.empty[Tree]
-      val pobjStack = ListBuffer.empty[Tree]
-
       def reifyAST(implicit ast :ASTree) = {
 
-        ast.constdefs.foreach(cd => defineConst(cd._1, cd._2))
-        val (pobjstats, pkgstats) = ast.typedefs.map(td => reifyType(td._1, td._2)).
-          foldLeft(List.empty[Tree], List.empty[Tree])(
-            (acc, curr) => (
-              if (curr._1.children.length > 1) acc._1 ++ curr._1.children.init else acc._1 ,
-              if (curr._2.children.length > 1) acc._2 ++ curr._2.children.init else acc._2
-              )
-          )
-        pkgStack ++= pkgstats
-        pobjStack ++= pobjstats
+        val conststat = ast.constdefs.map(kv => {
+          val (name, value) = kv
+          q"val ${TermName(name)} :Int = ${Constant(value.dig)}"
+        })
+        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyType(td._1, td._2))
 
         pkgname.map( pn => {
           val pname = TermName(pn)
           q"""
             package object $pname {
-            ..$constStack
-            ..$pobjStack
+            ..$conststat
             }
             package $pname {
-            ..$pkgStack
+            ..$pkgstats
             }
             """
-        }).getOrElse(q"..${constStack ++ pobjStack ++ pkgStack}")
+        }).getOrElse(q"..${conststat ++ pkgstats}")
       }
-
-      def defineConst(name :String, value :XDRConstantLiteral)(implicit ast :ASTree): Unit = {
-        constStack.append(q"val ${TermName(name)} :Int = ${Constant(value.dig)}")
-      }
-
-      def reifyType(n :String, x :TypeOrRef)(implicit ast :ASTree) :(Tree, Tree) = {
-        x.fold(
-          (idref) => {
-            (q"",
-              SemanticProcesser.resolveType(idref.dig).map((found) =>
-                trans(found._2).defineAs(found._1, Some(n))
-              ).getOrElse({
-                throw new Exception(s"can't resolve type ${idref.dig}")
-                q""
-              })
-              )
-          },
-          (tpe) => (q"", trans(tpe).defineAs(n, None))
-        )
-      }
-
     }
 
     def newSnippet(pkgname :Option[String]): Snippet = new Snippet(pkgname)
@@ -218,6 +187,22 @@ package codegen {
       ast.constdefs.find(_._1 == name).map(_._2)
     }
 
+    def reifyType(n :String, x :TypeOrRef)(implicit ast :ASTree) :List[Tree] = {
+      val compoundtree = x.fold(
+        (idref) => {
+          resolveType(idref.dig).map((found) =>
+            ScalaScaffold.trans(found._2).defineAs(found._1, Some(n))
+          ).getOrElse({
+            throw new Exception(s"can't resolve type ${idref.dig}")
+            q""
+          })
+        },
+        (tpe) => ScalaScaffold.trans(tpe).defineAs(n, None)
+      )
+      if (compoundtree.children.length > 1)
+        compoundtree.children.init
+      else List.empty[Tree]
+    }
 
     def reifyEnum(n :String, items :Seq[(String, XDRConstantLiteral)]) :Tree = {
       val itemstats = items.map(item =>
