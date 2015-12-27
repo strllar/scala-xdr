@@ -78,7 +78,6 @@ package object codegen {
 package codegen {
 
   object ScalaScaffold {
-    import Extractors._
 
     trait scalaType {
       def defineAs(name :String) :Tree
@@ -92,15 +91,15 @@ package codegen {
     }
 
     class XDREnumType(body :XDREnumBody) extends scalaType {
-      def defineAs(name :String) = reifyEnum(name, body)
+      def defineAs(name :String) = q"{}" //reifyEnum(name, body)
       def declareAs(name :String) =  Typed(q"${TermName(name)}", tq"DummyEnum")
     }
     class XDRStructType(body :XDRStructBody) extends scalaType {
-      def defineAs(name :String) = reifyStruct(name ,body)
+      def defineAs(name :String) = q"{}" //reifyStruct(name ,body)
       def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyStruct")
     }
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
-      def defineAs(name :String) = reifyUnion(name, body)
+      def defineAs(name :String) = q"{}" //reifyUnion(name, body)
       def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyUnion")
     }
 
@@ -137,131 +136,14 @@ package codegen {
       implicit def caseFlat(implicit mapper: Mapper[scalaMapping.type, FlatType]) = at[FlatType](
         _.flatMap(scalaMapping)
       )
-
-      def from(x :AnyType) :scalaType = {
-        x.flatMap(scalaMapping).unify
-      }
     }
 
-    def expandNested(n :String, anyType: AnyType) :List[Tree] = {
-      val shallow_defs =
-        anyType.select[NestedType].toList.flatMap( nt =>
-          nt.select[XDREnumeration].map(enum => {
-            reifyEnum(n, enum.body).children.init
-          }).getOrElse(
-            nt.select[XDRStructure].map(struct => {
-              reifyStruct(n, struct.body).children.init
-            }).getOrElse(
-              nt.select[XDRUnion].toList.flatMap(union => {
-                reifyUnion(n, union.body).children.init
-              })
-            )
-          )
-        )
-      shallow_defs
-      //val more_defs =
-
-//      ++
-//      anyType.select[FlatType].flatMap(
-//      _.select[CompositeType]
-//      ).toList.flatMap({
-//        //todo
-//        case XDRFixedLengthArray(tpe, _, _) => {
-//          SemanticProcesser.transType(tpe).fold(
-//          _ => list.empty[Tree],
-//            expandNested(n, _)
-//          )
-//
-//        }
-//        case XDRVariableLengthArray(tpe, _, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
-//        case XDROptional(tpe, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
-//      })
+    def trans(x :AnyType) :scalaType = {
+      x.flatMap(scalaMapping).unify
     }
-
-
-    def reifyEnum(n :String, x :XDREnumBody) :Tree = {
-      val items = x.items.map(item => (
-        item._1.dig,
-        item._2.dig.fold(
-          idref => q"${TermName(idref.dig)}",
-          value => q"${Constant(value.dig)}"
-        )))
-
-      val itemstats = items.map(item =>
-      q"case object ${TermName(item._1)} extends Enum(${item._2})"
-      )
-
-      val codeccases = items.map(item =>
-      cq"${item._2} => Attempt.successful(${TermName(item._1)})"
-      ) :+ cq"""x@_ => Attempt.failure(Err(s"unknow enum value $$x"))"""
-
-      q"""{
-          object ${TermName(n)} {
-          abstract class Enum(val value :Int)
-          ..$itemstats
-          implicit def codec :Codec[Enum] = codecs.int32.narrow[Enum]({
-          case ..$codeccases
-          }, ${pq"_"}.value)
-          }
-        }"""
-    }
-
-    def reifyStruct(n :String, x :XDRStructBody) :Tree = {
-
-      val components = x.components.map(SemanticProcesser.transDecl(_))
-
-      val innerdefs = components.collect({
-        case (s, Right(children)) => {
-          expandNested(s"anon_$s", children)
-        }
-      }).flatten
-
-      val decls = components.map({
-        case (s, Left(x)) => q"${TermName(s)} :${TypeName(x.dig)}"
-        case (s, Right(x)) => {
-          val tpe = scalaMapping.from(x)
-          tpe.declareAs(s)
-        }
-      })
-
-      val codec = q"${TermName("XDROptional")}(AccountID.codec) :: Operation.Union_body.codec"
-      //components.foldLeft(
-
-
-      q"""{
-         object ${TermName(n)} {
-         ..$innerdefs
-         case class Components(..$decls)
-         type Struct = ${TypeName(n)}
-         implicit def codec :Codec[Struct] = (
-         $codec
-         ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
-         }
-         class ${TypeName(n)}(val ${TermName("*")} :${TermName(n)}.Components)
-        }"""
-    }
-
-    def reifyUnion(n :String, x :XDRUnionBody) :Tree = {
-      val arms = x.arms.map(arm => SemanticProcesser.transDecl(arm.declaration)) ++ x.defdecl.map(identity).toSeq
-
-//      val innerdefs = arms.collect({
-//        case (s, Right(children)) => {
-//          expandNested(s"discriminant_$s", children)
-//        }
-//      }).flatten
-
-      q"""{
-          object ${TermName(n)} {
-          trait Arm {
-          val v :Int
-          }
-          type Union = discriminant_0 :+: CNil
-          }
-          }"""
-    }
-
 
     class Snippet(val pkgname :Option[String]) {
+      import Extractors._
 
       val constStack = ListBuffer.empty[Tree]
       val pkgStack = ListBuffer.empty[Tree]
@@ -301,7 +183,7 @@ package codegen {
       def reifyType(n :String, x :TypeOrRef)(implicit ast :ASTree) :(Tree, Tree) = {
         x.fold(
           (idref) => (q"{type ${TypeName(n)} = ${TypeName(idref.dig)}}", q""),
-          (tpe) => (q"", scalaMapping.from(tpe).defineAs(n))
+          (tpe) => (q"", trans(tpe).defineAs(n))
         )
       }
 
@@ -311,6 +193,7 @@ package codegen {
   }
 
   object SemanticProcesser {
+    import Extractors._
 
     def resolveType(name :String)(implicit ast :ASTree) :Option[(String, AnyType)] = {
       val found = ast.typedefs.find(_._1 == name)
@@ -323,6 +206,128 @@ package codegen {
     def resolveConst(name :String)(implicit ast :ASTree) :Option[XDRConstantLiteral] = {
       ast.constdefs.find(_._1 == name).map(_._2)
     }
+
+
+    def reifyEnum(n :String, items :Seq[(String, XDRConstantLiteral)]) :Tree = {
+      val itemstats = items.map(item =>
+        q"case object ${TermName(item._1)} extends Enum(${item._2.dig})"
+      )
+
+      val codeccases = items.map(item =>
+        cq"${item._2.dig} => Attempt.successful(${TermName(item._1)})"
+      ) :+ cq"""x@_ => Attempt.failure(Err(s"unknow enum value $$x"))"""
+
+      q"""{
+          object ${TermName(n)} {
+          abstract class Enum(val value :Int)
+          ..$itemstats
+          implicit def codec :Codec[Enum] = codecs.int32.narrow[Enum]({
+          case ..$codeccases
+          }, ${pq"_"}.value)
+          }
+        }"""
+    }
+
+    def reifyEnum(n :String, x :XDREnumBody)(implicit ast :ASTree) :Tree = {
+      val items = x.items.map(item => (
+        item._1.dig,
+        item._2.dig.fold(
+          idref => SemanticProcesser.resolveConst(idref.dig).get,
+          value => value
+        )))
+
+      reifyEnum(n, items)
+    }
+
+    def reifyStruct(n :String, x :XDRStructBody)(implicit ast :ASTree) :Tree = {
+
+      val components = x.components.map(SemanticProcesser.transDecl(_))
+
+      val innerdefs = components.collect({
+        case (s, Right(children)) => {
+          expandNested(s"anon_$s", children)
+        }
+      }).flatten
+
+      val decls = components.map({
+        case (s, Left(x)) => q"${TermName(s)} :${TypeName(x.dig)}"
+        case (s, Right(x)) => {
+          val tpe = ScalaScaffold.trans(x)
+          tpe.declareAs(s)
+        }
+      })
+
+      val codec = q"${TermName("XDROptional")}(AccountID.codec) :: Operation.Union_body.codec"
+      //components.foldLeft(
+
+
+      q"""{
+         object ${TermName(n)} {
+         ..$innerdefs
+         case class Components(..$decls)
+         type Struct = ${TypeName(n)}
+         implicit def codec :Codec[Struct] = (
+         $codec
+         ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
+         }
+         class ${TypeName(n)}(val ${TermName("*")} :${TermName(n)}.Components)
+        }"""
+    }
+
+    def reifyUnion(n :String, x :XDRUnionBody) :Tree = {
+      val arms = x.arms.map(arm => SemanticProcesser.transDecl(arm.declaration)) ++ x.defdecl.map(identity).toSeq
+
+      //      val innerdefs = arms.collect({
+      //        case (s, Right(children)) => {
+      //          expandNested(s"discriminant_$s", children)
+      //        }
+      //      }).flatten
+
+      q"""{
+          object ${TermName(n)} {
+          trait Arm {
+          val v :Int
+          }
+          type Union = discriminant_0 :+: CNil
+          }
+          }"""
+    }
+
+    def expandNested(n :String, anyType: AnyType)(implicit ast :ASTree) :List[Tree] = {
+      val shallow_defs =
+        anyType.select[NestedType].toList.flatMap( nt =>
+          nt.select[XDREnumeration].map(enum => {
+            reifyEnum(n, enum.body).children.init
+          }).getOrElse(
+            nt.select[XDRStructure].map(struct => {
+              reifyStruct(n, struct.body).children.init
+            }).getOrElse(
+              nt.select[XDRUnion].toList.flatMap(union => {
+                reifyUnion(n, union.body).children.init
+              })
+            )
+          )
+        )
+      shallow_defs
+      //val more_defs =
+
+      //      ++
+      //      anyType.select[FlatType].flatMap(
+      //      _.select[CompositeType]
+      //      ).toList.flatMap({
+      //        //todo
+      //        case XDRFixedLengthArray(tpe, _, _) => {
+      //          SemanticProcesser.transType(tpe).fold(
+      //          _ => list.empty[Tree],
+      //            expandNested(n, _)
+      //          )
+      //
+      //        }
+      //        case XDRVariableLengthArray(tpe, _, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
+      //        case XDROptional(tpe, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
+      //      })
+    }
+
 
     def transType(x :XDRTypeSpecifier) :TypeOrRef = {
       x match {
