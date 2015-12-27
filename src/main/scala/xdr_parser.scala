@@ -162,6 +162,7 @@ object xdrGenApp extends App {
       """
         |import scodec.{Codec, Attempt, Err, codecs}
         |import org.strllar.scalaxdr.xdrbase.XDRCodecs._
+        |import shapeless._
       """.stripMargin)
     outfile.println("")
     org.strllar.scalaxdr.codegen.genScala("xdr_generated", XDRSpecification(defs)).getLines.foreach(outfile.println)
