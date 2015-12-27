@@ -80,27 +80,27 @@ package codegen {
   object ScalaScaffold {
 
     trait scalaType {
-      def defineAs(name :String) :Tree
-      def declareAs(name :String) :Typed
+      def defineAs(name :String, alias :Option[String]) :Tree
+      def declareAs(name :String, alias :Option[String]) :Typed
       //def codecAs(name :String) :TermName
 
     }
     class DummyScalaType extends scalaType {
-      def defineAs(name :String) = q"{}"
-      def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyType")
+      override def defineAs(name :String, alias :Option[String]) = q"{}"
+      override def declareAs(name :String, alias :Option[String]) = Typed(q"${TermName(name)}", tq"DummyType")
     }
 
     class XDREnumType(body :XDREnumBody) extends scalaType {
-      def defineAs(name :String) = q"{}" //reifyEnum(name, body)
-      def declareAs(name :String) =  Typed(q"${TermName(name)}", tq"DummyEnum")
+      override def defineAs(name :String, alias :Option[String]) = q"{}" //reifyEnum(name, body)
+      override def declareAs(name :String, alias :Option[String]) =  Typed(q"${TermName(name)}", tq"DummyEnum")
     }
     class XDRStructType(body :XDRStructBody) extends scalaType {
-      def defineAs(name :String) = q"{}" //reifyStruct(name ,body)
-      def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyStruct")
+      def defineAs(name :String, alias :Option[String]) = q"{}" //reifyStruct(name ,body)
+      def declareAs(name :String, alias :Option[String]) = Typed(q"${TermName(name)}", tq"DummyStruct")
     }
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
-      def defineAs(name :String) = q"{}" //reifyUnion(name, body)
-      def declareAs(name :String) = Typed(q"${TermName(name)}", tq"DummyUnion")
+      def defineAs(name :String, alias :Option[String]) = q"{}" //reifyUnion(name, body)
+      def declareAs(name :String, alias :Option[String]) = Typed(q"${TermName(name)}", tq"DummyUnion")
     }
 
     object scalaMapping extends Poly1 {
@@ -182,8 +182,17 @@ package codegen {
 
       def reifyType(n :String, x :TypeOrRef)(implicit ast :ASTree) :(Tree, Tree) = {
         x.fold(
-          (idref) => (q"{type ${TypeName(n)} = ${TypeName(idref.dig)}}", q""),
-          (tpe) => (q"", trans(tpe).defineAs(n))
+          (idref) => {
+            (q"",
+              SemanticProcesser.resolveType(idref.dig).map((found) =>
+                trans(found._2).defineAs(found._1, Some(n))
+              ).getOrElse({
+                throw new Exception(s"can't resolve type ${idref.dig}")
+                q""
+              })
+              )
+          },
+          (tpe) => (q"", trans(tpe).defineAs(n, None))
         )
       }
 
@@ -250,10 +259,16 @@ package codegen {
       }).flatten
 
       val decls = components.map({
-        case (s, Left(x)) => q"${TermName(s)} :${TypeName(x.dig)}"
+        case (s, Left(x)) => {
+          resolveType(x.dig).map((found) =>
+            ScalaScaffold.trans(found._2).declareAs(found._1, Some(s))).getOrElse({
+            throw new Exception(s"can't resolve type ${x.dig} of field $s in struct $n")
+            q""
+          })
+        }
         case (s, Right(x)) => {
           val tpe = ScalaScaffold.trans(x)
-          tpe.declareAs(s)
+          tpe.declareAs(s, None)
         }
       })
 

@@ -1,5 +1,7 @@
 package org.strllar.scalaxdr
 
+import org.strllar.scalaxdr.rfc4506.{XDRDefinition, XDRSpecification}
+
 object XDRSyntax {
   import org.parboiled2._
 
@@ -129,21 +131,31 @@ object xdrGenApp extends App {
   )
 
   def run() {
-    xdrPathes.foreach( file => {
-      val input = scala.io.Source.fromFile("../../.." + file).mkString
-      val parser = new XDRSyntax.TopParser(input)
-      val result = parser.XDRFiles.run()
-      result match {
-        case Failure(error: ParseError) => {
-          println(s"//$file: parse error")
-          println(parser.formatError(error, new ErrorFormatter(showTraces = true)))
+    val (ns, defs) =
+      xdrPathes.foldLeft(("stellar", Vector.empty[XDRDefinition]))(
+        (acc, file) => {
+          val input = scala.io.Source.fromFile("../../.." + file).mkString
+          val parser = new XDRSyntax.TopParser(input)
+          val result = parser.XDRFiles.run()
+          result match {
+            case Failure(error: ParseError) => {
+              println(s"//$file: parse error")
+              println(parser.formatError(error, new ErrorFormatter(showTraces = true)))
+              acc
+            }
+            case Success(ns :: spec  :: HNil) => {
+              println(s"//$file: parse done")
+              if (ns.ident == acc._1) (acc._1, acc._2 ++ spec.defs)
+              else {
+                println(s"//unmatched namespace of $file: Expected ${acc._1} and Found ${ns.ident}")
+                acc
+              }
+            }
+          }
         }
-        case Success(ns :: spec  :: HNil) => {
-          println(s"//$file: parse done")
-          org.strllar.scalaxdr.codegen.genScala(ns.ident, spec).getLines.foreach(println)
-        }
-      }
-    })
+      )
+
+    org.strllar.scalaxdr.codegen.genScala(ns, XDRSpecification(defs)).getLines.foreach(println)
   }
 
   run()
