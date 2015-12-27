@@ -80,6 +80,7 @@ package object codegen {
 package codegen {
 
   object ScalaScaffold {
+    import Extractors._
 
     trait scalaType {
       def defineAs(name :String, alias :Option[String]) :Tree
@@ -92,27 +93,64 @@ package codegen {
       override def declareAs(name :String, alias :Option[String]) = Typed(q"${TermName(name)}", tq"DummyType")
     }
 
-    class XDREnumType(body :XDREnumBody) extends scalaType {
-      override def defineAs(name :String, alias :Option[String]) = q"{}" //reifyEnum(name, body)
+    class XDREnumType(items :Seq[(String, XDRConstantLiteral)]) extends scalaType {
+      override def defineAs(name :String, alias :Option[String]) = {
+        val itemstats = items.map(item =>
+          q"case object ${TermName(item._1)} extends Enum(${item._2.dig})"
+        )
+
+        val codeccases = items.map(item =>
+          cq"${item._2.dig} => Attempt.successful(${TermName(item._1)})"
+        ) :+ cq"""x@_ => Attempt.failure(Err(s"unknow enum value $$x"))"""
+
+        q"""{
+          object ${TermName(name)} {
+          abstract class Enum(val value :Int)
+          ..$itemstats
+          implicit def codec :Codec[Enum] = codecs.int32.narrow[Enum]({
+          case ..$codeccases
+          }, ${pq"_"}.value)
+          }
+        }"""
+      }
       override def declareAs(name :String, alias :Option[String]) =  Typed(q"${TermName(name)}", tq"DummyEnum")
     }
+
     class XDRStructType(body :XDRStructBody) extends scalaType {
-      def defineAs(name :String, alias :Option[String]) = q"{}" //reifyStruct(name ,body)
+      def defineAs(name :String, alias :Option[String]) = {
+        q"{}"
+      } //reifyStruct(name ,body)
       def declareAs(name :String, alias :Option[String]) = Typed(q"${TermName(name)}", tq"DummyStruct")
     }
+
     class XDRUnionType(body :XDRUnionBody) extends scalaType {
-      def defineAs(name :String, alias :Option[String]) = q"{}" //reifyUnion(name, body)
+      def defineAs(name :String, alias :Option[String]) = {
+        q"{}"
+      } //reifyUnion(name, body)
       def declareAs(name :String, alias :Option[String]) = Typed(q"${TermName(name)}", tq"DummyUnion")
+    }
+
+    object nestedMapping extends Poly1 {
+      implicit def caseEnum(implicit ast :ASTree) = at[XDREnumeration](x =>  {
+        new XDREnumType(SemanticProcesser.transEnum(x.body))
+      })
+      implicit def caseStruct(implicit ast :ASTree) = at[XDRStructure](x => {
+        new XDRStructType(x.body)
+      })
+      implicit def caseUnion(implicit ast :ASTree) = at[XDRUnion](x => {
+        new XDRUnionType(x.body)
+      })
+    }
+
+    object compoundMapping extends Poly1 {
+      implicit def caseArrayF = at[XDRFixedLengthArray](_ => new DummyScalaType)
+      implicit def caseArrayV = at[XDRVariableLengthArray](_ => new DummyScalaType)
+      implicit def caseOption = at[XDROptional](_ => new DummyScalaType)
+
     }
 
     object scalaMapping extends Poly1 {
       implicit def casenil = at[CNil](_ => new DummyScalaType)
-      implicit def caseEnum = at[XDREnumeration](x => new XDREnumType(x.body))
-      implicit def caseStruct = at[XDRStructure](x => new XDRStructType(x.body))
-      implicit def caseUnion = at[XDRUnion](x => new XDRUnionType(x.body))
-      implicit def caseArrayF = at[XDRFixedLengthArray](_ => new DummyScalaType)
-      implicit def caseArrayV = at[XDRVariableLengthArray](_ => new DummyScalaType)
-      implicit def caseOption = at[XDROptional](_ => new DummyScalaType)
 
       implicit def caseOpaqueF = at[XDRFixedLengthOpaque](_ => new DummyScalaType)
       implicit def caseOpaqueV = at[XDRVariableLengthOpaque](_ => new DummyScalaType)
@@ -126,21 +164,21 @@ package codegen {
       implicit def caseQuad = at[XDRQuadruple.type](_ => new DummyScalaType)
       implicit def caseBoolean = at[XDRBoolean.type](_ => new DummyScalaType)
 
-      implicit def caseNested(implicit mapper: Mapper[scalaMapping.type, NestedType]) = at[NestedType](
-        _.map(scalaMapping)
+      implicit def caseNested(implicit mapper: Mapper[nestedMapping.type, NestedType], ast :ASTree) = at[NestedType](
+        _.map(nestedMapping)
       )
       implicit def casePrimary(implicit mapper: Mapper[scalaMapping.type, PrimaryType]) = at[PrimaryType](
         _.map(scalaMapping)
       )
-      implicit def caseComposite(implicit mapper: Mapper[scalaMapping.type, CompositeType]) = at[CompositeType](
-        _.map(scalaMapping)
+      implicit def caseComposite(implicit mapper: Mapper[compoundMapping.type, CompositeType]) = at[CompositeType](
+        _.map(compoundMapping)
       )
-      implicit def caseFlat(implicit mapper: Mapper[scalaMapping.type, FlatType]) = at[FlatType](
+      implicit def caseFlat(implicit mapper: Mapper[scalaMapping.type, FlatType] ,ast :ASTree) = at[FlatType](
         _.flatMap(scalaMapping)
       )
     }
 
-    def trans(x :AnyType) :scalaType = {
+    def trans(x :AnyType)(implicit ast :ASTree) :scalaType = {
       x.flatMap(scalaMapping).unify
     }
 
@@ -204,35 +242,14 @@ package codegen {
       else List.empty[Tree]
     }
 
-    def reifyEnum(n :String, items :Seq[(String, XDRConstantLiteral)]) :Tree = {
-      val itemstats = items.map(item =>
-        q"case object ${TermName(item._1)} extends Enum(${item._2.dig})"
-      )
-
-      val codeccases = items.map(item =>
-        cq"${item._2.dig} => Attempt.successful(${TermName(item._1)})"
-      ) :+ cq"""x@_ => Attempt.failure(Err(s"unknow enum value $$x"))"""
-
-      q"""{
-          object ${TermName(n)} {
-          abstract class Enum(val value :Int)
-          ..$itemstats
-          implicit def codec :Codec[Enum] = codecs.int32.narrow[Enum]({
-          case ..$codeccases
-          }, ${pq"_"}.value)
-          }
-        }"""
-    }
-
-    def reifyEnum(n :String, x :XDREnumBody)(implicit ast :ASTree) :Tree = {
+    def transEnum(x :XDREnumBody)(implicit ast :ASTree) :Seq[(String, XDRConstantLiteral)] = {
       val items = x.items.map(item => (
         item._1.dig,
         item._2.dig.fold(
           idref => SemanticProcesser.resolveConst(idref.dig).get,
           value => value
         )))
-
-      reifyEnum(n, items)
+      items
     }
 
     def reifyStruct(n :String, x :XDRStructBody)(implicit ast :ASTree) :Tree = {
@@ -296,21 +313,22 @@ package codegen {
     }
 
     def expandNested(n :String, anyType: AnyType)(implicit ast :ASTree) :List[Tree] = {
-      val shallow_defs =
-        anyType.select[NestedType].toList.flatMap( nt =>
-          nt.select[XDREnumeration].map(enum => {
-            reifyEnum(n, enum.body).children.init
-          }).getOrElse(
-            nt.select[XDRStructure].map(struct => {
-              reifyStruct(n, struct.body).children.init
-            }).getOrElse(
-              nt.select[XDRUnion].toList.flatMap(union => {
-                reifyUnion(n, union.body).children.init
-              })
-            )
-          )
-        )
-      shallow_defs
+//      val shallow_defs =
+//        anyType.select[NestedType].toList.flatMap( nt =>
+//          nt.select[XDREnumeration].map(enum => {
+//            reifyEnum(n, enum.body).children.init
+//          }).getOrElse(
+//            nt.select[XDRStructure].map(struct => {
+//              reifyStruct(n, struct.body).children.init
+//            }).getOrElse(
+//              nt.select[XDRUnion].toList.flatMap(union => {
+//                reifyUnion(n, union.body).children.init
+//              })
+//            )
+//          )
+//        )
+//      shallow_defs
+      List.empty[Tree]
       //val more_defs =
 
       //      ++

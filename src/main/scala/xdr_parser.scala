@@ -158,6 +158,12 @@ object xdrGenApp extends App {
       )
 
     val outfile = new PrintWriter(new FileOutputStream("../../src/main/scala/xdr_generated.scala"))
+    outfile.print(
+      """
+        |import scodec.{Codec, Attempt, Err, codecs}
+        |import org.strllar.scalaxdr.xdrbase.XDRCodecs._
+      """.stripMargin)
+    outfile.println("")
     org.strllar.scalaxdr.codegen.genScala("xdr_generated", XDRSpecification(defs)).getLines.foreach(outfile.println)
     outfile.close()
     //org.strllar.scalaxdr.codegen.genScala(ns, XDRSpecification(defs)).getLines.foreach(println)
