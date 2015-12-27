@@ -1,5 +1,7 @@
 package org.strllar.scalaxdr
 
+import java.io.{FileOutputStream, PrintWriter}
+
 import org.strllar.scalaxdr.rfc4506.{XDRDefinition, XDRSpecification}
 
 object XDRSyntax {
@@ -155,7 +157,10 @@ object xdrGenApp extends App {
         }
       )
 
-    org.strllar.scalaxdr.codegen.genScala(ns, XDRSpecification(defs)).getLines.foreach(println)
+    val outfile = new PrintWriter(new FileOutputStream("../../src/main/scala/xdr_generated.scala"))
+    org.strllar.scalaxdr.codegen.genScala("xdr_generated", XDRSpecification(defs)).getLines.foreach(outfile.println)
+    outfile.close()
+    //org.strllar.scalaxdr.codegen.genScala(ns, XDRSpecification(defs)).getLines.foreach(println)
   }
 
   run()

@@ -70,7 +70,9 @@ package object codegen {
 
   def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
     scala.io.Source.fromIterable(
-      showCode(genAST(ns, spec)).toSeq
+      genAST(ns, spec).children.init.flatMap(
+        showCode(_) +  System.lineSeparator()
+      )
     )
   }
 }
