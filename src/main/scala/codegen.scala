@@ -117,10 +117,10 @@ package codegen {
         val (components, inplacedefs) = struct
         val codec = components.init.foldRight(q"${components.last._3.codecAs(components.last._2)}")(
           (c, acc) => {
-            q"$acc.::(${c._3.codecAs(c._2)})"
+            q"$acc.::(${c._3.codecAs(c._2)})" //TODO?
           }
         )
-        val decls = components.map(c => c._3.declareAs(c._1, c._2))
+        val decls = components.map(c => c._3.declareAs(c._1, c._2)) //TODO
 
         q"""{
            object ${TermName(name)} {
@@ -173,56 +173,78 @@ package codegen {
 
     object compoundMapping extends Poly1 {
       implicit def caseArrayF(implicit ast :ASTree) = at[XDRFixedLengthArray](x => {
-        //TODO FIX
-//        val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
-//          (idref) => {
-//            SemanticProcesser.resolveType(idref.dig).map((found) => {
-//              (Some(found._1), ScalaScaffold.trans(found._2))
-//            }).getOrElse({
-//              throw new Exception(s"can't resolve type ${idref.dig}")
-//              (None, null:scalaType)
-//            })
-//          },
-//          (tpe) => (None, ScalaScaffold.trans(tpe))
-//        )
-//        val len = x.length.dig.fold(
-//          (id) => q"${TermName(id.ident)}",
-//          (value) => q"${Constant(value.dig)}")
-//
-//        new scalaType {
-//          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Vector[${undertpe.declareAs(name, tpe)}]")
-//          override def codecAs(name :String) :Tree = q"XDRFixedLengthArray(${undertpe.codecAs(name)})(len)"
-//        }
-        new DummyScalaType
+        lazy val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
+          (idref) => {
+            SemanticProcesser.resolveType(idref.dig).map((found) => {
+              (Some(found._1), ScalaScaffold.trans(found._2))
+            }).getOrElse({
+              throw new Exception(s"can't resolve type ${idref.dig}")
+              (None, null:scalaType)
+            })
+          },
+          (tpe) => (None, ScalaScaffold.trans(tpe))
+        )
+        val len = x.length.dig.fold(
+          (id) => q"${TermName(id.ident)}",
+          (value) => q"${Constant(value.dig)}")
+
+        new scalaType {
+          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Vector[${undertpe.declareAs(name, tpe)}]")
+          override def codecAs(name :String) :Tree = q"XDRFixedLengthArray(${undertpe.codecAs(name)})($len)"
+        }
       })
       implicit def caseArrayV(implicit ast :ASTree) = at[XDRVariableLengthArray](x => {
 
-        //TODO FIX
-//        val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
-//          (idref) => {
-//            SemanticProcesser.resolveType(idref.dig).map((found) => {
-//              (Some(found._1), ScalaScaffold.trans(found._2))
-//            }).getOrElse({
-//              throw new Exception(s"can't resolve type ${idref.dig}")
-//              (None, null:scalaType)
-//            })
-//          },
-//          (tpe) => (None, ScalaScaffold.trans(tpe))
-//        )
-//        val len = x.maxlength.map(_.dig.fold(
-//          (id) => q"Some(${TermName(id.ident)})",
-//          (value) => q"Some(${Constant(value.dig)})")
-//        ).getOrElse(q"None")
-//
-//        //TODO...
-//        new scalaType {
-//          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Vector[${undertpe.declareAs(name, tpe)}]")
-//          override def codecAs(name :String) :Tree = q"XDRVariableLengthArray(${undertpe.codecAs(name)})(len)"
-//        }
-        new DummyScalaType
+        lazy val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
+          (idref) => {
+            SemanticProcesser.resolveType(idref.dig).map((found) => {
+              (Some(found._1), ScalaScaffold.trans(found._2))
+            }).getOrElse({
+              throw new Exception(s"can't resolve type ${idref.dig}")
+              (None, null:scalaType)
+            })
+          },
+          (tpe) => {
+            (None, ScalaScaffold.trans(tpe))
+          }
+        )
+
+        val len = x.maxlength.map(_.dig.fold(
+          (id) => q"Some(${TermName(id.ident)})",
+          (value) => q"Some(${Constant(value.dig)})")
+        ).getOrElse(q"None")
+
+        new scalaType {
+          override def declareAs(name :String, tpe :String) :Tree = {
+            Typed(q"${TermName(name)}", tq"Vector[${undertpe.declareAs(name, tpe)}]")
+          }
+          override def codecAs(name :String) :Tree = {
+            q"XDRVariableLengthArray($len, ${undertpe.codecAs(name)})"
+          }
+        }
       })
       implicit def caseOption(implicit ast :ASTree) = at[XDROptional](x => {
-        new DummyScalaType
+        lazy val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
+          (idref) => {
+            SemanticProcesser.resolveType(idref.dig).map((found) => {
+              (Some(found._1), ScalaScaffold.trans(found._2))
+            }).getOrElse({
+              throw new Exception(s"can't resolve type ${idref.dig}")
+              (None, null:scalaType)
+            })
+          },
+          (tpe) => {
+            (None, ScalaScaffold.trans(tpe))
+          }
+        )
+        new scalaType {
+          override def declareAs(name :String, tpe :String) :Tree = {
+            Typed(q"${TermName(name)}", tq"Option[${undertpe.declareAs(name, tpe)}]")
+          }
+          override def codecAs(name :String) :Tree = {
+            q"XDROptional(${undertpe.codecAs(name)})"
+          }
+        }
       })
 
     }
