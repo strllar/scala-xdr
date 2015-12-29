@@ -84,7 +84,7 @@ package codegen {
 
     trait scalaType {
       def defineAs(name :String) :Tree = q"{}"
-      def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"${TypeName(tpe)}")
+      def declareAs(tpe :String) :Tree = tq"${TypeName(tpe)}"
       def codecAs(name :String) :Tree = q"${TermName(name)}.codec"
     }
     class DummyScalaType extends scalaType
@@ -109,7 +109,7 @@ package codegen {
           }
         }"""
       }
-      override def declareAs(name :String, tpe :String) =   Typed(q"${TermName(name)}", tq"${TermName(tpe)}.Enum")
+      override def declareAs(tpe :String) =  tq"${TermName(tpe)}.Enum"
     }
 
     class XDRStructType(struct :SemanticProcesser.StructScheme) extends scalaType {
@@ -117,10 +117,10 @@ package codegen {
         val (components, inplacedefs) = struct
         val codec = components.init.foldRight(q"${components.last._3.codecAs(components.last._2)}")(
           (c, acc) => {
-            q"$acc.::(${c._3.codecAs(c._2)})" //TODO?
+            q"$acc.::(${c._3.codecAs(c._2)})"
           }
         )
-        val decls = components.map(c => c._3.declareAs(c._1, c._2)) //TODO
+        val decls = components.map(c => Typed(q"${TermName(c._1)}", c._3.declareAs(c._2)))
 
         q"""{
            object ${TermName(name)} {
@@ -156,7 +156,7 @@ package codegen {
           }
         }"""
       }
-      override def declareAs(name :String, tpe :String) =   Typed(q"${TermName(name)}", tq"${TermName(tpe)}.Union")
+      override def declareAs(tpe :String) = tq"${TermName(tpe)}.Union"
     }
 
     object nestedMapping extends Poly1 {
@@ -173,7 +173,7 @@ package codegen {
 
     object compoundMapping extends Poly1 {
       implicit def caseArrayF(implicit ast :ASTree) = at[XDRFixedLengthArray](x => {
-        lazy val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
+        lazy val (namehint, undertpe) = SemanticProcesser.transType(x.typespec).fold(
           (idref) => {
             SemanticProcesser.resolveType(idref.dig).map((found) => {
               (Some(found._1), ScalaScaffold.trans(found._2))
@@ -189,13 +189,13 @@ package codegen {
           (value) => q"${Constant(value.dig)}")
 
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Vector[${undertpe.declareAs(name, tpe)}]")
-          override def codecAs(name :String) :Tree = q"XDRFixedLengthArray(${undertpe.codecAs(name)})($len)"
+          override def declareAs(tpe :String) :Tree =tq"Vector[${undertpe.declareAs(namehint.getOrElse(tpe))}]"
+          override def codecAs(name :String) :Tree = q"XDRFixedLengthArray(${undertpe.codecAs(namehint.getOrElse(name))})($len)"
         }
       })
       implicit def caseArrayV(implicit ast :ASTree) = at[XDRVariableLengthArray](x => {
 
-        lazy val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
+        lazy val (namehint, undertpe) = SemanticProcesser.transType(x.typespec).fold(
           (idref) => {
             SemanticProcesser.resolveType(idref.dig).map((found) => {
               (Some(found._1), ScalaScaffold.trans(found._2))
@@ -215,16 +215,14 @@ package codegen {
         ).getOrElse(q"None")
 
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = {
-            Typed(q"${TermName(name)}", tq"Vector[${undertpe.declareAs(name, tpe)}]")
-          }
+          override def declareAs(tpe :String) :Tree = tq"Vector[${undertpe.declareAs(namehint.getOrElse(tpe))}]"
           override def codecAs(name :String) :Tree = {
-            q"XDRVariableLengthArray($len, ${undertpe.codecAs(name)})"
+            q"XDRVariableLengthArray($len, ${undertpe.codecAs(namehint.getOrElse(name))})"
           }
         }
       })
       implicit def caseOption(implicit ast :ASTree) = at[XDROptional](x => {
-        lazy val (name, undertpe) = SemanticProcesser.transType(x.typespec).fold(
+        lazy val (namehint, undertpe) = SemanticProcesser.transType(x.typespec).fold(
           (idref) => {
             SemanticProcesser.resolveType(idref.dig).map((found) => {
               (Some(found._1), ScalaScaffold.trans(found._2))
@@ -238,11 +236,9 @@ package codegen {
           }
         )
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = {
-            Typed(q"${TermName(name)}", tq"Option[${undertpe.declareAs(name, tpe)}]")
-          }
+          override def declareAs(tpe :String) :Tree = tq"Option[${undertpe.declareAs(namehint.getOrElse(tpe))}]"
           override def codecAs(name :String) :Tree = {
-            q"XDROptional(${undertpe.codecAs(name)})"
+            q"XDROptional(${undertpe.codecAs(namehint.getOrElse(name))})"
           }
         }
       })
@@ -254,7 +250,7 @@ package codegen {
 
       implicit def caseOpaqueF = at[XDRFixedLengthOpaque](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Vector[Byte]")
+          override def declareAs(tpe :String) :Tree = tq"Vector[Byte]"
           override def codecAs(name :String) :Tree = x.length.dig.fold(
             (id) => q"XDRFixedLengthOpaque(${TermName(id.ident)})",
             (value) => q"XDRFixedLengthOpaque(${Constant(value.dig)})"
@@ -262,7 +258,7 @@ package codegen {
         })
       implicit def caseOpaqueV = at[XDRVariableLengthOpaque](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Vector[Byte]")
+          override def declareAs(tpe :String) :Tree = tq"Vector[Byte]"
           override def codecAs(name :String) :Tree = x.maxlength.map(
             _.dig.fold(
             (id) => q"XDRVariableLengthOpaque(Some(${TermName(id.ident)}))",
@@ -271,7 +267,7 @@ package codegen {
         })
       implicit def caseString = at[XDRString](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"String")
+          override def declareAs(tpe :String) :Tree = tq"String"
           override def codecAs(name :String) :Tree = x.maxlength.map(
             _.dig.fold(
               (id) => q"XDRString(Some(${TermName(id.ident)}))",
@@ -280,36 +276,36 @@ package codegen {
         })
       implicit def caseVoid = at[XDRVoid](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Unit")
+          override def declareAs(tpe :String) :Tree = tq"Unit"
           override def codecAs(name :String) :Tree = q"XDRVoid"
         })
       implicit def caseInt = at[XDRInteger.type](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Int")
+          override def declareAs(tpe :String) :Tree = tq"Int"
           override def codecAs(name :String) :Tree = q"XDRInteger"
         })
       implicit def caseUInt = at[XDRUnsignedInteger.type](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Long")
+          override def declareAs(tpe :String) :Tree = tq"Long"
           override def codecAs(name :String) :Tree = q"XDRUnsignedInteger"
         })
       implicit def caseHyper = at[XDRHyper](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree =
-            if (x.signed) Typed(q"${TermName(name)}", tq"Long")
-            else Typed(q"${TermName(name)}", tq"BigInt")
+          override def declareAs(tpe :String) :Tree =
+            if (x.signed) tq"Long"
+            else tq"BigInt"
           override def codecAs(name :String) :Tree =
             if (x.signed) q"XDRHyper"
             else q"XDRUnsignedHyper"
         })
       implicit def caseFloat = at[XDRFloat.type](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Float")
+          override def declareAs(tpe :String) :Tree = tq"Float"
           override def codecAs(name :String) :Tree = q"XDRFloat"
         })
       implicit def caseDouble = at[XDRDouble.type](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Double")
+          override def declareAs(tpe :String) :Tree = tq"Double"
           override def codecAs(name :String) :Tree = q"XDRDouble"
         })
       implicit def caseQuad = at[XDRQuadruple.type](_ => new DummyScalaType) //TODO
@@ -321,7 +317,7 @@ package codegen {
 
       implicit def caseBoolean = at[XDRBoolean.type](x =>
         new scalaType {
-          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"Boolean")
+          override def declareAs(tpe :String) :Tree = tq"Boolean"
           override def codecAs(name :String) :Tree = q"XDRBoolean"
         })
 
@@ -386,13 +382,14 @@ package codegen {
       ast.constdefs.find(_._1 == name).map(_._2)
     }
 
-    def reifyType(n :String, x :TypeOrRef)(implicit ast :ASTree) :List[Tree] = {
+    def reifyType(n :String, x :TypeOrRef, reifyalias :Boolean = false)(implicit ast :ASTree) :List[Tree] = {
       val compoundtree = x.fold(
         (idref) => {
           resolveType(idref.dig).map((found) => {
-            q""
-            //uncomment to instantial aliased type
-            //ScalaScaffold.trans(found._2).defineAs(n)
+            if (reifyalias) {
+              ScalaScaffold.trans(found._2).defineAs(n)
+            }
+            else q""
           }).getOrElse({
             throw new Exception(s"can't resolve type ${idref.dig}")
             q""
@@ -432,8 +429,9 @@ package codegen {
         }
         case (fieldname, Right(tpe)) => {
           val inplacetype = s"anontype_$fieldname"
-          inplacedefs ++= expandNested(inplacetype, tpe)
-          (fieldname, inplacetype, ScalaScaffold.trans(tpe))
+          val (nestdefs, namehint) = expandNested(inplacetype, tpe)
+          inplacedefs ++= nestdefs
+          (fieldname, namehint, ScalaScaffold.trans(tpe))
         }
       })
 
@@ -444,40 +442,29 @@ package codegen {
     def transUnion(x :XDRUnionBody) :UnionScheme = {
     }
 
-    def expandNested(n :String, anyType: AnyType)(implicit ast :ASTree) :List[Tree] = {
-////      val shallow_defs =
-////        anyType.select[NestedType].toList.flatMap( nt =>
-////          nt.select[XDREnumeration].map(enum => {
-////            reifyEnum(n, enum.body).children.init
-////          }).getOrElse(
-////            nt.select[XDRStructure].map(struct => {
-////              reifyStruct(n, struct.body).children.init
-////            }).getOrElse(
-////              nt.select[XDRUnion].toList.flatMap(union => {
-////                reifyUnion(n, union.body).children.init
-////              })
-////            )
-////          )
-////        )
-////      shallow_defs
-      List.empty[Tree]
-      //val more_defs =
+    object transCompound extends Poly1 {
+      implicit def caseArrayF(implicit ast :ASTree) = at[XDRFixedLengthArray](x => transType(x.typespec))
+      implicit def caseArrayV(implicit ast :ASTree) = at[XDRVariableLengthArray](x => transType(x.typespec))
+      implicit def caseOption(implicit ast :ASTree) = at[XDROptional](x => transType(x.typespec))
+    }
 
-      //      ++
-      //      anyType.select[FlatType].flatMap(
-      //      _.select[CompositeType]
-      //      ).toList.flatMap({
-      //        //todo
-      //        case XDRFixedLengthArray(tpe, _, _) => {
-      //          SemanticProcesser.transType(tpe).fold(
-      //          _ => list.empty[Tree],
-      //            expandNested(n, _)
-      //          )
-      //
-      //        }
-      //        case XDRVariableLengthArray(tpe, _, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
-      //        case XDROptional(tpe, _) => {expandNested(n, SemanticProcesser.transType(tpe))}
-      //      })
+    def expandNested(n :String, anyType: AnyType)(implicit ast :ASTree) :(List[Tree], String) = {
+      val reifyalias = false
+
+      val coretpe = anyType.select[FlatType].flatMap(
+        _.select[CompositeType].map(_.map(transCompound).unify)
+      ).getOrElse(Right(anyType):TypeOrRef)
+
+      val name = coretpe.left.toOption.map( idref =>
+        if (reifyalias) idref.ident
+        else resolveType(idref.ident).map(_._1).getOrElse({
+          throw new Exception(s"can't resolve type ${idref.dig}")
+          n
+        })
+      ).getOrElse(n)
+
+      //reifyalias argument of reifyType has to be false no matter what current reifyalias is
+      (reifyType(n, coretpe, false), name)
     }
 
 
