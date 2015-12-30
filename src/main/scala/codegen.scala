@@ -147,18 +147,38 @@ package codegen {
 
     class XDRUnionType(union :SemanticProcesser.UnionScheme) extends scalaType {
       override def defineAs(name :String) = {
-        val (arms, inplacedefs) = union
+        val (discdecl, arms, inplacedefs) = union
+
+//        val (codec) = arms.foldLeft( q"codecs.discriminated[Union].by(MemoType.codec)")((acc, arm) => {
+//          val (fieldname, namehint, undertype) = arm
+//          //q"$acc.:+:(${undertype.codecAs(namehint)})"
+//        })
+
+        val (armclz, uniondef) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
+          (arm, acc) => {
+            val (fieldname, namehint, undertype, casevalue) = arm
+
+            val armclzname = TypeName("discriminant_" + casevalue.dig.fold(_.ident, _.dig.toString))
+            val clzdef = casevalue.dig.fold(
+              id => q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} = ${TermName(id.dig)} }",
+              num => q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} = ${Constant(num.dig)} }"
+            )
+
+            (clzdef +: acc._1,  q":+:[$armclzname, ${acc._2}]")
+        })
+
         val n = name
         q"""{
           object ${TermName(n)} {
               trait Arm {
-              val v :Int
+              val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)}
               }
               ..$inplacedefs
+              ..$armclz
               class discriminant_0() extends Arm {
                   val v = 0
               }
-              type Union = discriminant_0 :+: CNil
+              type Union = $uniondef
               implicit def codec :Codec[Union] = codecs.discriminated[Union].by(XDRInteger).caseO(0)(
                 _.select[discriminant_0].map(x => ()))(
                   (x) => Coproduct[Union](new discriminant_0()))(
@@ -423,17 +443,17 @@ package codegen {
       (components, inplacedefs.result())
     }
 
-    type UnionScheme = (Seq[(String, String, ScalaScaffold.scalaType)], List[Tree])
+    type UnionScheme = ((String, String, ScalaScaffold.scalaType), Seq[(String, String, ScalaScaffold.scalaType, Seq[XDRValue])], List[Tree])
     def transUnion(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
 
       val inplacedefs = List.newBuilder[Tree]
 
-      val arms = x.arms.map(arm => transDecl(arm.declaration) match {
+      val discr = transDecl(x.discriminant) match {
         case (fieldname, Left(idref)) => {
           resolveType(idref.dig).
             map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2))).
             getOrElse({
-              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in struct")
+              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in union")
               (fieldname, "", null:ScalaScaffold.scalaType)
             })
         }
@@ -442,9 +462,25 @@ package codegen {
           inplacedefs ++= nestdefs
           (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
         }
+      }
+
+      val arms = x.arms.map(arm => transDecl(arm.declaration) match {
+        case (fieldname, Left(idref)) => {
+          resolveType(idref.dig).
+            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2), arm.values)).
+            getOrElse({
+              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in union")
+              (fieldname, "", null:ScalaScaffold.scalaType, arm.values)
+            })
+        }
+        case (fieldname, Right(tpe)) => {
+          val (nestdefs, tpenamehint) = expandNested(fieldname, tpe)
+          inplacedefs ++= nestdefs
+          (fieldname, tpenamehint, ScalaScaffold.trans(tpe), arm.values)
+        }
       })
 
-      (arms, inplacedefs.result())
+      (discr, arms, inplacedefs.result())
     }
 
     object transCompositePoly extends Poly1 {
