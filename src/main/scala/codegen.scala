@@ -147,12 +147,14 @@ package codegen {
 
     class XDRUnionType(union :SemanticProcesser.UnionScheme) extends scalaType {
       override def defineAs(name :String) = {
+        val (arms, inplacedefs) = union
         val n = name
         q"""{
           object ${TermName(n)} {
               trait Arm {
               val v :Int
               }
+              ..$inplacedefs
               class discriminant_0() extends Arm {
                   val v = 0
               }
@@ -421,8 +423,28 @@ package codegen {
       (components, inplacedefs.result())
     }
 
-    type UnionScheme = Unit
-    def transUnion(x :XDRUnionBody) :UnionScheme = {
+    type UnionScheme = (Seq[(String, String, ScalaScaffold.scalaType)], List[Tree])
+    def transUnion(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
+
+      val inplacedefs = List.newBuilder[Tree]
+
+      val arms = x.arms.map(arm => transDecl(arm.declaration) match {
+        case (fieldname, Left(idref)) => {
+          resolveType(idref.dig).
+            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2))).
+            getOrElse({
+              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in struct")
+              (fieldname, "", null:ScalaScaffold.scalaType)
+            })
+        }
+        case (fieldname, Right(tpe)) => {
+          val (nestdefs, tpenamehint) = expandNested(fieldname, tpe)
+          inplacedefs ++= nestdefs
+          (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
+        }
+      })
+
+      (arms, inplacedefs.result())
     }
 
     object transCompositePoly extends Poly1 {
