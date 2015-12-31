@@ -149,10 +149,10 @@ package codegen {
       override def defineAs(name :String) = {
         val (discdecl, arms, inplacedefs) = union
 
-//        val (codec) = arms.foldLeft( q"codecs.discriminated[Union].by(MemoType.codec)")((acc, arm) => {
-//          val (fieldname, namehint, undertype) = arm
-//          //q"$acc.:+:(${undertype.codecAs(namehint)})"
-//        })
+        val codecstat = arms.foldLeft( q"codecs.discriminated[Union].by(MemoType.codec)")((acc, arm) => {
+          val (fieldname, namehint, undertype, casevalue) = arm
+          q"$acc" //TODO
+        })
 
         val (armclz, uniondef) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
           (arm, acc) => {
@@ -175,15 +175,8 @@ package codegen {
               }
               ..$inplacedefs
               ..$armclz
-              class discriminant_0() extends Arm {
-                  val v = 0
-              }
               type Union = $uniondef
-              implicit def codec :Codec[Union] = codecs.discriminated[Union].by(XDRInteger).caseO(0)(
-                _.select[discriminant_0].map(x => ()))(
-                  (x) => Coproduct[Union](new discriminant_0()))(
-                     XDRVoid
-                     )
+              implicit def codec :Codec[Union] = $codecstat
           }
         }"""
       }
@@ -463,6 +456,8 @@ package codegen {
           (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
         }
       }
+      //dirty buggy hack
+      inplacedefs += q"import ${TermName(discr._2)}._"
 
       val arms = x.arms.map(arm => transDecl(arm.declaration) match {
         case (fieldname, Left(idref)) => {
