@@ -156,7 +156,7 @@ package codegen {
       }
 
       override def defineAs(name :String) = {
-        val (discdecl, arms, inplacedefs) = union
+        val (discdecl, arms, deftarm, inplacedefs) = union
 
         val codecstat = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).
           foldLeft( q"codecs.discriminated[Union].by(${discdecl._3.codecAs(discdecl._2)})")((acc, arm) => {
@@ -165,7 +165,14 @@ package codegen {
           q"$acc.caseO(${wrapCaseValue(casevalue)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(fieldname)}))((x) => Coproduct[Union](new $discriminClz(x)))(${undertype.codecAs(namehint)})"
         })
 
+
         //TODO: handle default arm
+        deftarm.map(arm => {
+          val (fieldname, namehint, undertype) = arm
+          val armclzname = "discriminant_default"
+          val clzdef = q"class $armclzname(val ${TermName(discdecl._1)}, val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm {}"
+        })
+
 
         val (armclz, uniondef) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
           (arm, acc) => {
@@ -446,10 +453,26 @@ package codegen {
       (components, inplacedefs.result())
     }
 
-    type UnionScheme = ((String, String, ScalaScaffold.scalaType), Seq[(String, String, ScalaScaffold.scalaType, Seq[XDRValue])], List[Tree])
+    type UnionScheme = ((String, String, ScalaScaffold.scalaType), Seq[(String, String, ScalaScaffold.scalaType, Seq[XDRValue])], Option[(String, String, ScalaScaffold.scalaType)], List[Tree])
     def transUnion(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
 
       val inplacedefs = List.newBuilder[Tree]
+
+      val defaularm = x.defdecl.map(x => transDecl(x) match {
+        case (fieldname, Left(idref)) => {
+          resolveType(idref.dig).
+            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2))).
+            getOrElse({
+              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in union")
+              (fieldname, "", null:ScalaScaffold.scalaType)
+            })
+        }
+        case (fieldname, Right(tpe)) => {
+          val (nestdefs, tpenamehint) = expandNested(fieldname, tpe)
+          inplacedefs ++= nestdefs
+          (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
+        }
+      })
 
       val discr = transDecl(x.discriminant) match {
         case (fieldname, Left(idref)) => {
@@ -485,7 +508,7 @@ package codegen {
         }
       })
 
-      (discr, arms, inplacedefs.result())
+      (discr, arms, defaularm, inplacedefs.result())
     }
 
     object transCompositePoly extends Poly1 {
