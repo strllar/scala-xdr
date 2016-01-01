@@ -146,23 +146,33 @@ package codegen {
     }
 
     class XDRUnionType(union :SemanticProcesser.UnionScheme) extends scalaType {
+
+      def wrapCaseValue(xDRValue: XDRValue) =  xDRValue.dig.fold(
+        id => q"${TermName(id.dig)}",
+        num => q"${Constant(num.dig)}"
+      )
+      def clzName(xDRValue: XDRValue) = {
+        "discriminant_" + xDRValue.dig.fold(_.ident, _.dig.toString)
+      }
+
       override def defineAs(name :String) = {
         val (discdecl, arms, inplacedefs) = union
 
-        val codecstat = arms.foldLeft( q"codecs.discriminated[Union].by(MemoType.codec)")((acc, arm) => {
-          val (fieldname, namehint, undertype, casevalue) = arm
-          q"$acc" //TODO
+        val codecstat = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).
+          foldLeft( q"codecs.discriminated[Union].by(${discdecl._3.codecAs(discdecl._2)})")((acc, arm) => {
+            val (fieldname, namehint, undertype, casevalue) = arm
+            val discriminClz =  TypeName(clzName(casevalue))
+          q"$acc.caseO(${wrapCaseValue(casevalue)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(fieldname)}))((x) => Coproduct[Union](new $discriminClz(x)))(${undertype.codecAs(namehint)})"
         })
+
+        //TODO: handle default arm
 
         val (armclz, uniondef) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
           (arm, acc) => {
             val (fieldname, namehint, undertype, casevalue) = arm
 
-            val armclzname = TypeName("discriminant_" + casevalue.dig.fold(_.ident, _.dig.toString))
-            val clzdef = casevalue.dig.fold(
-              id => q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} = ${TermName(id.dig)} }",
-              num => q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} = ${Constant(num.dig)} }"
-            )
+            val armclzname = TypeName(clzName(casevalue))
+            val clzdef = q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} = ${wrapCaseValue(casevalue)} }"
 
             (clzdef +: acc._1,  q":+:[$armclzname, ${acc._2}]")
         })
