@@ -147,42 +147,49 @@ package codegen {
 
     class XDRUnionType(union :SemanticProcesser.UnionScheme) extends scalaType {
 
-      def wrapCaseValue(xDRValue: XDRValue) =  xDRValue.dig.fold(
-        id => q"${TermName(id.dig)}",
-        num => q"${Constant(num.dig)}"
-      )
+      def wrapCaseValue(xDRValue: XDRValue, namehint :String, tpe: scalaType) =  {
+        //quick dirty hack
+        xDRValue.dig.fold(
+          id => q"${TermName(namehint)}.${TermName(id.dig)}",
+          num => q"${Constant(num.dig)}"
+        )
+      }
       def clzName(xDRValue: XDRValue) = {
         "discriminant_" + xDRValue.dig.fold(_.ident, _.dig.toString)
       }
 
+      def defaultClzName = "discriminant_default"
+
       override def defineAs(name :String) = {
         val (discdecl, arms, deftarm, inplacedefs) = union
 
-        val codecstat = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).
-          foldLeft( q"codecs.discriminated[Union].by(${discdecl._3.codecAs(discdecl._2)})")((acc, arm) => {
+        val codecstat0 = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).
+          foldLeft( q"codecs.discriminated[ArmsUnion].by(${discdecl._3.codecAs(discdecl._2)})")((acc, arm) => {
             val (fieldname, namehint, undertype, casevalue) = arm
             val discriminClz =  TypeName(clzName(casevalue))
-          q"$acc.caseO(${wrapCaseValue(casevalue)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(fieldname)}))((x) => Coproduct[Union](new $discriminClz(x)))(${undertype.codecAs(namehint)})"
+          q"$acc.caseO(${wrapCaseValue(casevalue, discdecl._2, discdecl._3)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(fieldname)}))((x) => Coproduct[ArmsUnion](new $discriminClz(x)))(${undertype.codecAs(namehint)})"
         })
 
 
-        //TODO: handle default arm
-        deftarm.map(arm => {
-          val (fieldname, namehint, undertype) = arm
-          val armclzname = "discriminant_default"
-          val clzdef = q"class $armclzname(val ${TermName(discdecl._1)}, val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm {}"
-        })
-
-
-        val (armclz, uniondef) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
+        val (totclz0, uniondef0) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
           (arm, acc) => {
             val (fieldname, namehint, undertype, casevalue) = arm
 
             val armclzname = TypeName(clzName(casevalue))
-            val clzdef = q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} = ${wrapCaseValue(casevalue)} }"
+            val clzdef = q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)} = ${wrapCaseValue(casevalue, discdecl._2, discdecl._3)} }"
 
             (clzdef +: acc._1,  q":+:[$armclzname, ${acc._2}]")
         })
+
+        val (totclz, uniondef, codecstat) = deftarm.map(arm => {
+          val (fieldname, namehint, undertype) = arm
+          val deftarmclz = TypeName(defaultClzName)
+          val deftcodec = q"(${discdecl._3.codecAs(discdecl._2)} :: ${undertype.codecAs(namehint)}).as[$deftarmclz]"
+          (totclz0 :+ q"class $deftarmclz(val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)}, val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm {}",
+            q"Either[$deftarmclz, ${TypeName("ArmsUnion")}]",
+            q"codecs.discriminatorFallback($deftcodec, $codecstat0)")
+        }).getOrElse((totclz0, tq"ArmsUnion", codecstat0))
+
 
         val n = name
         q"""{
@@ -191,7 +198,8 @@ package codegen {
               val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)}
               }
               ..$inplacedefs
-              ..$armclz
+              ..$totclz
+              type ArmsUnion = $uniondef0
               type Union = $uniondef
               implicit def codec :Codec[Union] = $codecstat
           }
@@ -489,8 +497,6 @@ package codegen {
           (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
         }
       }
-      //dirty buggy hack
-      inplacedefs += q"import ${TermName(discr._2)}._"
 
       val arms = x.arms.map(arm => transDecl(arm.declaration) match {
         case (fieldname, Left(idref)) => {
