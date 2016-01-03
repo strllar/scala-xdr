@@ -17,10 +17,6 @@ object Extractors {
     }
   }
 
-  implicit def extractIdentifier(ident :XDRIdentifierLiteral) = new {
-    def dig = ident.ident
-  }
-
   implicit def extracValue(v :XDRValue) = new {
     def dig :ValueOrRef = v match {
       case XDRConstantValue(value) => Right(value)
@@ -45,7 +41,8 @@ object Extractors {
 import shapeless._
 import shapeless.poly._
 import shapeless.ops.coproduct.{Mapper}
-
+//import ops.nat._
+//import LT._
 
 package object codegen {
 
@@ -74,7 +71,7 @@ package object codegen {
   //exposed util functions
 
   def genAST(ns :String, specs :XDRSpecification) = {
-    SemanticProcesser.transSpec(ns, specs)
+    SemanticProcesser.genSpec(ns, specs)
   }
 
   def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
@@ -88,7 +85,9 @@ package object codegen {
 
 package codegen {
 
-  object ScalaScaffold {
+import scala.annotation.tailrec
+
+object ScalaScaffold {
     import Extractors._
 
     trait scalaType {
@@ -96,7 +95,8 @@ package codegen {
       def declareAs(tpe :String) :Tree = tq"${TypeName(tpe)}"
       def codecAs(name :String) :Tree = q"${TermName(name)}.codec"
     }
-    class DummyScalaType extends scalaType
+    object DummyScalaType extends scalaType
+    val DummyStatement = q""
 
     class XDREnumType(enum :SemanticProcesser.EnumScheme) extends scalaType {
       override def defineAs(name :String) = {
@@ -124,12 +124,12 @@ package codegen {
     class XDRStructType(struct :SemanticProcesser.StructScheme) extends scalaType {
       override def defineAs(name :String) = {
         val (components, inplacedefs) = struct
-        val codec = components.init.foldRight(q"${components.last._3.codecAs(components.last._2)}")(
+        val codec = components.init.foldRight(q"${components.last.tpe.codec}")(
           (c, acc) => {
-            q"$acc.::(${c._3.codecAs(c._2)})"
+            q"$acc.::(${c.tpe.codec})"
           }
         )
-        val decls = components.map(c => Typed(q"${TermName(c._1)}", c._3.declareAs(c._2)))
+        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.tpe.declare))
 
         q"""{
            object ${TermName(name)} {
@@ -150,7 +150,7 @@ package codegen {
       def wrapCaseValue(xDRValue: XDRValue, namehint :String, tpe: scalaType) =  {
         //quick dirty hack
         xDRValue.dig.fold(
-          id => q"${TermName(namehint)}.${TermName(id.dig)}",
+          id => q"${TermName(namehint)}.${TermName(id.ident)}",
           num => q"${Constant(num.dig)}"
         )
       }
@@ -163,29 +163,29 @@ package codegen {
       override def defineAs(name :String) = {
         val (discdecl, arms, deftarm, inplacedefs) = union
 
-        val codecstat0 = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).
-          foldLeft( q"codecs.discriminated[ArmsUnion].by(${discdecl._3.codecAs(discdecl._2)})")((acc, arm) => {
-            val (fieldname, namehint, undertype, casevalue) = arm
+        val codecstat0 = arms.flatMap(arm => {arm._2.map(single => (arm._1, single))}).
+          foldLeft( q"codecs.discriminated[ArmsUnion].by(${discdecl.tpe.codec})")((acc, arm) => {
+            val (field, casevalue) = arm
             val discriminClz =  TypeName(clzName(casevalue))
-          q"$acc.caseO(${wrapCaseValue(casevalue, discdecl._2, discdecl._3)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(fieldname)}))((x) => Coproduct[ArmsUnion](new $discriminClz(x)))(${undertype.codecAs(namehint)})"
+          q"$acc.caseO(${wrapCaseValue(casevalue, discdecl.tpe.ident, discdecl.tpe.template.tpe)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(field.fieldname)}))((x) => Coproduct[ArmsUnion](new $discriminClz(x)))(${field.tpe.codec})"
         })
 
 
-        val (totclz0, uniondef0) = arms.flatMap(arm => {arm._4.map(single => (arm._1, arm._2, arm._3, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
+        val (totclz0, uniondef0) = arms.flatMap(arm => {arm._2.map(single => (arm._1, single))}).foldRight((List.empty[Tree], tq"${TypeName("CNil")}":Tree))(
           (arm, acc) => {
-            val (fieldname, namehint, undertype, casevalue) = arm
+            val (field, casevalue) = arm
 
             val armclzname = TypeName(clzName(casevalue))
-            val clzdef = q"class $armclzname(val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm { val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)} = ${wrapCaseValue(casevalue, discdecl._2, discdecl._3)} }"
+            val clzdef = q"class $armclzname(val ${TermName(field.fieldname)} :${field.tpe.declare}) extends Arm { val ${TermName(discdecl.fieldname)} :${discdecl.tpe.declare} = ${wrapCaseValue(casevalue, discdecl.tpe.ident, discdecl.tpe.template.tpe)} }"
 
             (clzdef +: acc._1,  q":+:[$armclzname, ${acc._2}]")
         })
 
         val (totclz, uniondef, codecstat) = deftarm.map(arm => {
-          val (fieldname, namehint, undertype) = arm
+          val field = arm
           val deftarmclz = TypeName(defaultClzName)
-          val deftcodec = q"(${discdecl._3.codecAs(discdecl._2)} :: ${undertype.codecAs(namehint)}).as[$deftarmclz]"
-          (totclz0 :+ q"class $deftarmclz(val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)}, val ${TermName(fieldname)} :${undertype.declareAs(namehint)}) extends Arm {}",
+          val deftcodec = q"(${discdecl.tpe.codec} :: ${field.tpe.codec}).as[$deftarmclz]"
+          (totclz0 :+ q"class $deftarmclz(val ${TermName(discdecl.fieldname)} :${discdecl.tpe.declare}, val ${TermName(field.fieldname)} :${field.tpe.declare}) extends Arm {}",
             q"Either[$deftarmclz, ${TypeName("ArmsUnion")}]",
             q"codecs.discriminatorFallback($deftcodec, $codecstat0)")
         }).getOrElse((totclz0, tq"ArmsUnion", codecstat0))
@@ -195,7 +195,7 @@ package codegen {
         q"""{
           object ${TermName(n)} {
               trait Arm {
-              val ${TermName(discdecl._1)} :${discdecl._3.declareAs(discdecl._2)}
+              val ${TermName(discdecl.fieldname)} :${discdecl.tpe.declare}
               }
               ..$inplacedefs
               ..$totclz
@@ -222,23 +222,23 @@ package codegen {
 
     object compositeMapping extends Poly1 {
       implicit def caseArrayF(implicit ast :ASTree) = at[XDRFixedLengthArray](x => {
-        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x))
+        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, x.tpe), x => (Some(x.ident), x.template.tpe))
         val len = x.length.dig.fold(
           (id) => q"${TermName(id.ident)}",
           (value) => q"${Constant(value.dig)}")
 
         new scalaType {
           override def declareAs(tpe :String) :Tree ={
-            tq"Vector[${trans(undertpe).declareAs(namehint.getOrElse(tpe))}]"
+            tq"Vector[${(undertpe).declareAs(namehint.getOrElse(tpe))}]"
           }
           override def codecAs(name :String) :Tree = {
-            q"XDRFixedLengthArray(${trans(undertpe).codecAs(namehint.getOrElse(name))})($len)"
+            q"XDRFixedLengthArray(${(undertpe).codecAs(namehint.getOrElse(name))})($len)"
           }
         }
       })
 
       implicit def caseArrayV(implicit ast :ASTree) = at[XDRVariableLengthArray](x => {
-        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x))
+        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, x.tpe), x => (Some(x.ident), x.template.tpe))
         val len = x.maxlength.map(_.dig.fold(
           (id) => q"Some(${TermName(id.ident)})",
           (value) => q"Some(${Constant(value.dig)})")
@@ -246,23 +246,23 @@ package codegen {
 
         new scalaType {
           override def declareAs(tpe :String) :Tree = {
-            tq"Vector[${trans(undertpe).declareAs(namehint.getOrElse(tpe))}]"
+            tq"Vector[${(undertpe).declareAs(namehint.getOrElse(tpe))}]"
           }
           override def codecAs(name :String) :Tree = {
-            q"XDRVariableLengthArray($len, ${trans(undertpe).codecAs(namehint.getOrElse(name))})"
+            q"XDRVariableLengthArray($len, ${(undertpe).codecAs(namehint.getOrElse(name))})"
           }
         }
       })
 
       implicit def caseOption(implicit ast :ASTree) = at[XDROptional](x => {
-        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x))
+        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, x.tpe), x => (Some(x.ident), x.template.tpe))
 
         new scalaType {
           override def declareAs(tpe :String) :Tree = {
-            tq"Option[${trans(undertpe).declareAs(namehint.getOrElse(tpe))}]"
+            tq"Option[${(undertpe).declareAs(namehint.getOrElse(tpe))}]"
           }
           override def codecAs(name :String) :Tree = {
-            q"XDROptional(${trans(undertpe).codecAs(namehint.getOrElse(name))})"
+            q"XDROptional(${(undertpe).codecAs(namehint.getOrElse(name))})"
           }
         }
       })
@@ -270,7 +270,7 @@ package codegen {
     }
 
     object scalaMapping extends Poly1 {
-      implicit def casenil = at[CNil](_ => new DummyScalaType)
+      implicit def casenil = at[CNil](_ => DummyScalaType)
 
       implicit def caseOpaqueF = at[XDRFixedLengthOpaque](x =>
         new scalaType {
@@ -332,7 +332,7 @@ package codegen {
           override def declareAs(tpe :String) :Tree = tq"Double"
           override def codecAs(name :String) :Tree = q"XDRDouble"
         })
-      implicit def caseQuad = at[XDRQuadruple.type](_ => new DummyScalaType) //TODO
+      implicit def caseQuad = at[XDRQuadruple.type](_ => DummyScalaType) //TODO
 //      (x =>
 //        new scalaType {
 //          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"BigDecimal")
@@ -372,7 +372,7 @@ package codegen {
           val (name, value) = kv
           q"val ${TermName(name)} :Int = ${Constant(value.dig)}"
         })
-        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyType(td._1, td._2))
+        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyTypeDef(td._1, td._2))
 
         pkgname.map( pn => {
           val pname = TermName(pn)
@@ -394,169 +394,158 @@ package codegen {
   object SemanticProcesser {
     import Extractors._
 
-    def resolveType(name :String)(implicit ast :ASTree) :Option[(String, AnyType)] = {
+    type ReifyStage = Either[ReifiableType, ReifiedType]
+
+    case class ReifiableType(tpe: ScalaScaffold.scalaType, undertpe :Option[ReifyStage])
+
+    case class ReifiedType(ident :String, template :ReifiableType) {
+      def defineStatements :List[Tree] = {
+        val statements = template.tpe.defineAs(ident)
+        if (statements.children.isEmpty) statements.children
+        else statements.children.init
+      }
+      def codec = template.tpe.codecAs(ident)
+      def declare = template.tpe.declareAs(ident)
+    }
+
+    case class ReifiedField(fieldname :String, tpe :ReifiedType)
+
+    object transCompositePoly extends Poly1 {
+      implicit def caseArrayF = at[XDRFixedLengthArray](x => reshapeType(x.typespec))
+      implicit def caseArrayV = at[XDRVariableLengthArray](x => reshapeType(x.typespec))
+      implicit def caseOption = at[XDROptional](x => reshapeType(x.typespec))
+    }
+
+    def transComposite(compType :CompositeType)(implicit ast :ASTree) :ReifyStage =  {
+      //to remove
+      transType(compType.map(transCompositePoly).unify)
+    }
+
+    def liftComposite(anyType :AnyType)(implicit ast :ASTree) :Option[ReifyStage] =  {
+      anyType.select[FlatType].flatMap(
+        _.select[CompositeType].map(transComposite)
+      )
+    }
+
+    def resolveTypeIdent(name :String)(implicit ast :ASTree) :(String, ReifyStage) = {
       val found = ast.typedefs.find(_._1 == name)
-      found.flatMap(_._2.fold(
-        refid => resolveType(refid.ident),
-        Some(name, _)
-      ))
+      found.get._2.fold(
+        refid => resolveTypeIdent(refid.ident),
+        tpe => (name, transType(Right(tpe)))
+      )
     }
 
     def resolveConst(name :String)(implicit ast :ASTree) :Option[XDRConstantLiteral] = {
       ast.constdefs.find(_._1 == name).map(_._2)
     }
 
-    def reifyType(n :String, x :TypeOrRef, shallowly :Boolean = false)(implicit ast :ASTree) :List[Tree] = {
-      val statements = x.fold(
+    def transType(typespec :TypeOrRef)(implicit ast :ASTree) :ReifyStage = {
+      typespec.fold(
         (idref) => {
-          resolveType(idref.dig).map((found) => {
-            if (shallowly) {
-              ScalaScaffold.trans(found._2).defineAs(n)
-            }
-            else q""
-          }).getOrElse({
-            throw new Exception(s"can't resolve type ${idref.dig}")
-            q""
-          })
+          aliasReifier(idref.ident)._2
         },
-        (tpe) => ScalaScaffold.trans(tpe).defineAs(n)
+        (tpe) => Left(ReifiableType(ScalaScaffold.trans(tpe), liftComposite(tpe)))
       )
-      if (statements.children.length > 1)
-        statements.children.init
-      else List.empty[Tree]
+    }
+
+    def aliasReifier(name :String)(implicit ast :ASTree) :(List[ReifiedType], ReifyStage) = {
+      val (bottom, stage) = resolveTypeIdent(name)
+      if (name == bottom) {
+        (stageReifier(Seq(name, s"$name"+"_aux"), stage)._1, Right(ReifiedType(name, stage.fold(identity, _.template))))
+      }
+      else (List.empty[ReifiedType], stage)
+    }
+
+    //def stageReifier[N <: Nat](names :Sized[Seq[String], N], stage :ReifyStage)(implicit ev: N < _3) :(List[ReifiedType], ReifiedType) = {
+    def stageReifier(names :Seq[String], stage :ReifyStage, deps :List[ReifiedType] = List.empty[ReifiedType]) :(List[ReifiedType], ReifiedType) = {
+      val (rdeps, fullreified) = stage match {
+        case Left(ReifiableType(tpe, Some(undertpe@Left(_)))) => {
+          //tpe here must be a composite type, which will not be reified
+          val lookforward = stageReifier(names.tail, undertpe, deps)
+          val reified = ReifiedType(names.head, ReifiableType(tpe, Some(Right(lookforward._2))))
+          (reified +: lookforward._1, reified)
+        }
+        case Left(x@ReifiableType(tpe, Some(undertpe@Right(_)))) => {
+          (ReifiedType(names.head, x) +: deps, ReifiedType(names.head, x))
+        }
+        case Left(ltype@ReifiableType(tpe, None)) => {
+          (ReifiedType(names.head, ltype) +: deps, ReifiedType(names.head, ltype))
+        }
+        case Right(reified) => {
+          (deps, reified)
+        }
+      }
+      (rdeps.reverse, fullreified)
+    }
+
+    def reifyTypeDef(n :String, typespec :TypeOrRef)(implicit ast :ASTree) :List[Tree] = {
+      aliasReifier(n)._1.flatMap(_.defineStatements)
+    }
+
+    def reifyField(n :String, typespec :TypeOrRef)(implicit ast :ASTree) :(ReifiedField, List[Tree]) = {
+      val name = s"anon_$n"+"_type"
+      val (deps, reified) = stageReifier(Seq(name, name), transType(typespec))
+      (ReifiedField(n, reified), deps.flatMap(_.defineStatements))
     }
 
     type EnumScheme = Seq[(String, XDRConstantLiteral)]
     def transEnum(x :XDREnumBody)(implicit ast :ASTree) :EnumScheme = {
       val items = x.items.map(item => (
-        item._1.dig,
+        item._1.ident,
         item._2.dig.fold(
-          idref => SemanticProcesser.resolveConst(idref.dig).get,
+          idref => SemanticProcesser.resolveConst(idref.ident).get,
           value => value
         )))
       items
     }
 
-    type StructScheme = (Seq[(String, String, ScalaScaffold.scalaType)],List[Tree])
+    type StructScheme = (Seq[ReifiedField],List[Tree])
     def transStruct(x :XDRStructBody)(implicit ast :ASTree) :StructScheme = {
 
       val inplacedefs = List.newBuilder[Tree]
 
-      val components = x.components.map(transDecl(_) match {
-        case (fieldname, Left(idref)) => {
-          resolveType(idref.dig).
-            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2))).
-            getOrElse({
-              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in struct")
-              (fieldname, "", null:ScalaScaffold.scalaType)
-            })
-        }
-        case (fieldname, Right(tpe)) => {
-          val (nestdefs, namehint) = expandNested(fieldname, tpe)
-          inplacedefs ++= nestdefs
-          (fieldname, namehint, ScalaScaffold.trans(tpe))
-        }
+      val components = x.components.map(decl => {
+        val (fieldname, typespec) = reshapeDecl(decl)
+        val (field, nestdefs) = reifyField(fieldname, typespec)
+        inplacedefs ++= nestdefs
+        field
       })
-
       (components, inplacedefs.result())
     }
 
-    type UnionScheme = ((String, String, ScalaScaffold.scalaType), Seq[(String, String, ScalaScaffold.scalaType, Seq[XDRValue])], Option[(String, String, ScalaScaffold.scalaType)], List[Tree])
+    type UnionScheme = (ReifiedField, Seq[(ReifiedField, Seq[XDRValue])], Option[ReifiedField], List[Tree])
     def transUnion(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
 
       val inplacedefs = List.newBuilder[Tree]
 
-      val defaularm = x.defdecl.map(x => transDecl(x) match {
-        case (fieldname, Left(idref)) => {
-          resolveType(idref.dig).
-            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2))).
-            getOrElse({
-              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in union")
-              (fieldname, "", null:ScalaScaffold.scalaType)
-            })
-        }
-        case (fieldname, Right(tpe)) => {
-          val (nestdefs, tpenamehint) = expandNested(fieldname, tpe)
+      val defaularm = x.defdecl.map(x => reshapeDecl(x) match {
+        case (fieldname, typespec) => {
+          val (field, nestdefs) = reifyField(fieldname, typespec)
           inplacedefs ++= nestdefs
-          (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
+          field
         }
       })
 
-      val discr = transDecl(x.discriminant) match {
-        case (fieldname, Left(idref)) => {
-          resolveType(idref.dig).
-            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2))).
-            getOrElse({
-              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in union")
-              (fieldname, "", null:ScalaScaffold.scalaType)
-            })
-        }
-        case (fieldname, Right(tpe)) => {
-          val (nestdefs, tpenamehint) = expandNested(fieldname, tpe)
+      val discr = reshapeDecl(x.discriminant) match {
+        case (fieldname, typespec) => {
+          val (field, nestdefs) = reifyField(fieldname, typespec)
           inplacedefs ++= nestdefs
-          (fieldname, tpenamehint, ScalaScaffold.trans(tpe))
+          field
         }
       }
 
-      val arms = x.arms.map(arm => transDecl(arm.declaration) match {
-        case (fieldname, Left(idref)) => {
-          resolveType(idref.dig).
-            map((found) =>(fieldname, found._1, ScalaScaffold.trans(found._2), arm.values)).
-            getOrElse({
-              throw new Exception(s"can't resolve type ${idref.dig} of field $fieldname in union")
-              (fieldname, "", null:ScalaScaffold.scalaType, arm.values)
-            })
-        }
-        case (fieldname, Right(tpe)) => {
-          val (nestdefs, tpenamehint) = expandNested(fieldname, tpe)
+      val arms = x.arms.map(arm => reshapeDecl(arm.declaration) match {
+        case (fieldname, typespec) => {
+          val (field, nestdefs) = reifyField(fieldname, typespec)
           inplacedefs ++= nestdefs
-          (fieldname, tpenamehint, ScalaScaffold.trans(tpe), arm.values)
+          (field, arm.values)
         }
       })
 
       (discr, arms, defaularm, inplacedefs.result())
     }
 
-    object transCompositePoly extends Poly1 {
-      implicit def caseArrayF = at[XDRFixedLengthArray](x => transType(x.typespec))
-      implicit def caseArrayV = at[XDRVariableLengthArray](x => transType(x.typespec))
-      implicit def caseOption = at[XDROptional](x => transType(x.typespec))
-    }
-
-    def transComposite(compType :CompositeType)(implicit ast :ASTree) =  {
-      compType.map(transCompositePoly).unify.fold(
-        (idref) => {
-          resolveType(idref.dig).map((found) => {
-            (Some(found._1), found._2)
-          }).getOrElse({
-            throw new Exception(s"can't resolve type ${idref.dig}")
-            (None, null:AnyType)
-          })
-        },
-        (tpe) => (None, tpe)
-      )
-    }
-
-    def liftComposite(anyType :AnyType)(implicit ast :ASTree) =  {
-      anyType.select[FlatType].flatMap(
-        _.select[CompositeType].map(transComposite)
-      ).getOrElse((None, anyType))
-    }
-
-    def expandNested(n :String, anyType: AnyType)(implicit ast :ASTree) :(List[Tree], String) = {
-      val (namehint, tpehint) = liftComposite(anyType)
-      if (namehint.isDefined) {
-        //a named reference
-        (List.empty[Tree], namehint.get)
-      }
-      else {
-        //instant defined type
-        val name = s"anon_$n"+"_type"
-        (reifyType(name, Right(tpehint), false), name)
-      }
-    }
-
-    def transType(x :XDRTypeSpecifier) :TypeOrRef = {
+    def reshapeType(x :XDRTypeSpecifier) :TypeOrRef = {
       x match {
         case XDRIdentifierTypeSpecifier(alias) => Left(alias)
         case x@XDRInteger => Right(liftType(Coproduct[PrimaryType](x)))
@@ -572,9 +561,9 @@ package codegen {
       }
     }
 
-    def transDecl(x :XDRDeclaration) :(String, TypeOrRef) = {
+    def reshapeDecl(x :XDRDeclaration) :(String, TypeOrRef) = {
       x match {
-        case XDRPlainDeclaration(x, XDRIdentifierLiteral(name)) => (name, transType(x))
+        case XDRPlainDeclaration(x, XDRIdentifierLiteral(name)) => (name, reshapeType(x))
         case x@XDRFixedLengthArray(_, XDRIdentifierLiteral(name), _) => (name, Right(liftType(Coproduct[CompositeType](x))))
         case x@XDRVariableLengthArray(_, XDRIdentifierLiteral(name), _) => (name, Right(liftType(Coproduct[CompositeType](x))))
         case x@XDRFixedLengthOpaque(XDRIdentifierLiteral(name), _) => (name, Right(liftType(Coproduct[PrimaryType](x))))
@@ -589,9 +578,9 @@ package codegen {
       (x.name.ident, x.value)
     }
 
-    def transTypeDef(x :XDRTypeDef) :(String, TypeOrRef) = {
+    def reshapeTypeDef(x :XDRTypeDef) :(String, TypeOrRef) = {
       x match {
-        case XDRPlainTypedef(x) => transDecl(x)
+        case XDRPlainTypedef(x) => reshapeDecl(x)
         case XDREnumTypedef(XDRIdentifierLiteral(name), x) => (name, Right(liftType(Coproduct[NestedType](XDREnumeration(x)))))
         case XDRStructTypedef(XDRIdentifierLiteral(name), x) => (name, Right(liftType(Coproduct[NestedType](XDRStructure(x)))))
         case XDRUnionTypedef(XDRIdentifierLiteral(name), x) => (name, Right(liftType(Coproduct[NestedType](XDRUnion(x)))))
@@ -604,14 +593,14 @@ package codegen {
         Vector.empty[(String, XDRConstantLiteral)]
       )((y, x) => {
         x.fold(
-          z => (y._1 :+ transTypeDef(z), y._2),
+          z => (y._1 :+ reshapeTypeDef(z), y._2),
           z => (y._1, y._2 :+ transConstDef(z))
         )
       })
       ASTree.tupled(alldef)
     }
 
-    def transSpec(ns :String, specs :XDRSpecification) = {
+    def genSpec(ns :String, specs :XDRSpecification) = {
       val src = ScalaScaffold.newSnippet(
         Some(ns)
       )
