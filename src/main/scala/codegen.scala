@@ -85,13 +85,15 @@ package object codegen {
 
 package codegen {
 
+import org.strllar.scalaxdr.codegen.SemanticProcesser.{ReifiedType, ReifiableType}
+
 import scala.annotation.tailrec
 
 object ScalaScaffold {
     import Extractors._
 
     trait scalaType {
-      def defineAs(name :String) :Tree = q"{}"
+      def defineAs(name :String)(implicit ast :ASTree) :Tree = q"{}"
       def declareAs(tpe :String) :Tree = tq"${TypeName(tpe)}"
       def codecAs(name :String) :Tree = q"${TermName(name)}.codec"
     }
@@ -99,7 +101,7 @@ object ScalaScaffold {
     val DummyStatement = q""
 
     class XDREnumType(enum :SemanticProcesser.EnumScheme) extends scalaType {
-      override def defineAs(name :String) = {
+      override def defineAs(name :String)(implicit ast :ASTree) = {
         val itemstats = enum.map(item =>
           q"case object ${TermName(item._1)} extends Enum(${item._2.dig})"
         )
@@ -121,15 +123,17 @@ object ScalaScaffold {
       override def declareAs(tpe :String) =  tq"${TermName(tpe)}.Enum"
     }
 
-    class XDRStructType(struct :SemanticProcesser.StructScheme) extends scalaType {
-      override def defineAs(name :String) = {
-        val (components, inplacedefs) = struct
-        val codec = components.init.foldRight(q"${components.last.tpe.codec}")(
+    class XDRStructType(items :SemanticProcesser.StructScheme) extends scalaType {
+      override def defineAs(name :String)(implicit ast :ASTree) = {
+        val inplacedefs = items.flatMap(f => SemanticProcesser.reifyField(f)._1)
+        val components =  items.map(f => SemanticProcesser.reifyField(f)._2)
+
+        val codec = components.init.foldRight(q"${components.last.codec}")(
           (c, acc) => {
-            q"$acc.::(${c.tpe.codec})"
+            q"$acc.::(${c.codec})"
           }
         )
-        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.tpe.declare))
+        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.declare))
 
         q"""{
            object ${TermName(name)} {
@@ -160,14 +164,20 @@ object ScalaScaffold {
 
       def defaultClzName = "discriminant_default"
 
-      override def defineAs(name :String) = {
-        val (discdecl, arms, deftarm, inplacedefs) = union
+      override def defineAs(name :String)(implicit ast :ASTree) = {
+        val (discdecl, arms, deftarm, inplacedefs) = (
+          SemanticProcesser.reifyField(union._1)._2,
+          (union._2.map(x => (SemanticProcesser.reifyField(x._1)._2, x._2))),
+          union._3.map(x => SemanticProcesser.reifyField(x)._2),
+          SemanticProcesser.reifyField(union._1)._1 ++ union._2.flatMap(x => (SemanticProcesser.reifyField(x._1)._1)) ++ union._3.toSeq.flatMap(x => SemanticProcesser.reifyField(x)._1)
+          )
+
 
         val codecstat0 = arms.flatMap(arm => {arm._2.map(single => (arm._1, single))}).
-          foldLeft( q"codecs.discriminated[ArmsUnion].by(${discdecl.tpe.codec})")((acc, arm) => {
+          foldLeft( q"codecs.discriminated[ArmsUnion].by(${discdecl.codec})")((acc, arm) => {
             val (field, casevalue) = arm
             val discriminClz =  TypeName(clzName(casevalue))
-          q"$acc.caseO(${wrapCaseValue(casevalue, discdecl.tpe.ident, discdecl.tpe.template.tpe)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(field.fieldname)}))((x) => Coproduct[ArmsUnion](new $discriminClz(x)))(${field.tpe.codec})"
+          q"$acc.caseO(${wrapCaseValue(casevalue, discdecl.ident, discdecl.tpe)})(${pq"_"}.select[$discriminClz].map(${pq"_"}.${TermName(field.fieldname)}))((x) => Coproduct[ArmsUnion](new $discriminClz(x)))(${field.codec})"
         })
 
 
@@ -176,7 +186,7 @@ object ScalaScaffold {
             val (field, casevalue) = arm
 
             val armclzname = TypeName(clzName(casevalue))
-            val clzdef = q"class $armclzname(val ${TermName(field.fieldname)} :${field.tpe.declare}) extends Arm { val ${TermName(discdecl.fieldname)} :${discdecl.tpe.declare} = ${wrapCaseValue(casevalue, discdecl.tpe.ident, discdecl.tpe.template.tpe)} }"
+            val clzdef = q"class $armclzname(val ${TermName(field.fieldname)} :${field.declare}) extends Arm { val ${TermName(discdecl.fieldname)} :${discdecl.declare} = ${wrapCaseValue(casevalue, discdecl.ident, discdecl.tpe)} }"
 
             (clzdef +: acc._1,  q":+:[$armclzname, ${acc._2}]")
         })
@@ -184,8 +194,8 @@ object ScalaScaffold {
         val (totclz, uniondef, codecstat) = deftarm.map(arm => {
           val field = arm
           val deftarmclz = TypeName(defaultClzName)
-          val deftcodec = q"(${discdecl.tpe.codec} :: ${field.tpe.codec}).as[$deftarmclz]"
-          (totclz0 :+ q"class $deftarmclz(val ${TermName(discdecl.fieldname)} :${discdecl.tpe.declare}, val ${TermName(field.fieldname)} :${field.tpe.declare}) extends Arm {}",
+          val deftcodec = q"(${field.codec}.::(${discdecl.codec})).as[$deftarmclz]"
+          (totclz0 :+ q"class $deftarmclz(val ${TermName(discdecl.fieldname)} :${discdecl.declare}, val ${TermName(field.fieldname)} :${field.declare}) extends Arm {}",
             q"Either[$deftarmclz, ${TypeName("ArmsUnion")}]",
             q"codecs.discriminatorFallback($deftcodec, $codecstat0)")
         }).getOrElse((totclz0, tq"ArmsUnion", codecstat0))
@@ -195,7 +205,7 @@ object ScalaScaffold {
         q"""{
           object ${TermName(n)} {
               trait Arm {
-              val ${TermName(discdecl.fieldname)} :${discdecl.tpe.declare}
+              val ${TermName(discdecl.fieldname)} :${discdecl.declare}
               }
               ..$inplacedefs
               ..$totclz
@@ -222,7 +232,8 @@ object ScalaScaffold {
 
     object compositeMapping extends Poly1 {
       implicit def caseArrayF(implicit ast :ASTree) = at[XDRFixedLengthArray](x => {
-        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, x.tpe), x => (Some(x.ident), x.template.tpe))
+        lazy val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, trans(x.tpe)), x => (Some(x.ident), trans(x.tpe)))
+
         val len = x.length.dig.fold(
           (id) => q"${TermName(id.ident)}",
           (value) => q"${Constant(value.dig)}")
@@ -238,7 +249,7 @@ object ScalaScaffold {
       })
 
       implicit def caseArrayV(implicit ast :ASTree) = at[XDRVariableLengthArray](x => {
-        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, x.tpe), x => (Some(x.ident), x.template.tpe))
+        lazy val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, trans(x.tpe)), x => (Some(x.ident), trans(x.tpe)))
         val len = x.maxlength.map(_.dig.fold(
           (id) => q"Some(${TermName(id.ident)})",
           (value) => q"Some(${Constant(value.dig)})")
@@ -255,7 +266,7 @@ object ScalaScaffold {
       })
 
       implicit def caseOption(implicit ast :ASTree) = at[XDROptional](x => {
-        val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, x.tpe), x => (Some(x.ident), x.template.tpe))
+        lazy val (namehint, undertpe) = SemanticProcesser.transComposite(Coproduct[CompositeType](x)).fold(x => (None, trans(x.tpe)), x => (Some(x.ident), trans(x.tpe)))
 
         new scalaType {
           override def declareAs(tpe :String) :Tree = {
@@ -372,7 +383,7 @@ object ScalaScaffold {
           val (name, value) = kv
           q"val ${TermName(name)} :Int = ${Constant(value.dig)}"
         })
-        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyTypeDef(td._1, td._2))
+        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyTypeDef(td._1))
 
         pkgname.map( pn => {
           val pname = TermName(pn)
@@ -396,19 +407,11 @@ object ScalaScaffold {
 
     type ReifyStage = Either[ReifiableType, ReifiedType]
 
-    case class ReifiableType(tpe: ScalaScaffold.scalaType, undertpe :Option[ReifyStage])
+    case class ReifiableType(tpe: AnyType, undertpe :Option[ReifyStage])
 
-    case class ReifiedType(ident :String, template :ReifiableType) {
-      def defineStatements :List[Tree] = {
-        val statements = template.tpe.defineAs(ident)
-        if (statements.children.isEmpty) statements.children
-        else statements.children.init
-      }
-      def codec = template.tpe.codecAs(ident)
-      def declare = template.tpe.declareAs(ident)
-    }
+    case class ReifiedType(ident :String, tpe: AnyType, undertpe :Option[ReifiedType])
 
-    case class ReifiedField(fieldname :String, tpe :ReifiedType)
+    case class StagedField(name :String, tpe :ReifyStage)
 
     object transCompositePoly extends Poly1 {
       implicit def caseArrayF = at[XDRFixedLengthArray](x => reshapeType(x.typespec))
@@ -416,22 +419,20 @@ object ScalaScaffold {
       implicit def caseOption = at[XDROptional](x => reshapeType(x.typespec))
     }
 
-    def transComposite(compType :CompositeType)(implicit ast :ASTree) :ReifyStage =  {
-      //to remove
-      transType(compType.map(transCompositePoly).unify)
+    def transComposite(ct :CompositeType)(implicit ast :ASTree) :ReifyStage = {
+      transType(ct.map(transCompositePoly).unify)
     }
-
     def liftComposite(anyType :AnyType)(implicit ast :ASTree) :Option[ReifyStage] =  {
       anyType.select[FlatType].flatMap(
         _.select[CompositeType].map(transComposite)
       )
     }
 
-    def resolveTypeIdent(name :String)(implicit ast :ASTree) :(String, ReifyStage) = {
+    def resolveTypeIdent(name :String)(implicit ast :ASTree) :(String, AnyType) = {
       val found = ast.typedefs.find(_._1 == name)
       found.get._2.fold(
         refid => resolveTypeIdent(refid.ident),
-        tpe => (name, transType(Right(tpe)))
+        tpe => (name, tpe)
       )
     }
 
@@ -439,53 +440,67 @@ object ScalaScaffold {
       ast.constdefs.find(_._1 == name).map(_._2)
     }
 
+    //Any alias in the transType-liftComposite loop will break to avoid inifity loop
     def transType(typespec :TypeOrRef)(implicit ast :ASTree) :ReifyStage = {
       typespec.fold(
-        (idref) => {
-          aliasReifier(idref.ident)._2
-        },
-        (tpe) => Left(ReifiableType(ScalaScaffold.trans(tpe), liftComposite(tpe)))
+        x => Right(aliasReifier(x.ident).merge),
+        x => Left(ReifiableType(x, liftComposite(x)))
       )
     }
 
-    def aliasReifier(name :String)(implicit ast :ASTree) :(List[ReifiedType], ReifyStage) = {
-      val (bottom, stage) = resolveTypeIdent(name)
-      if (name == bottom) {
-        (stageReifier(Seq(name, s"$name"+"_aux"), stage)._1, Right(ReifiedType(name, stage.fold(identity, _.template))))
-      }
-      else (List.empty[ReifiedType], stage)
+    def aliasReifier(name :String)(implicit ast :ASTree) :Either[ReifiedType, ReifiedType] = {
+      val (bottom, anyType) = resolveTypeIdent(name)
+      val reified = ReifiedType(bottom, anyType, liftComposite(anyType).map(stageReifier(s"$name"+"_aux", _)._2))
+      if (bottom == name) Left(reified)
+      else Right(reified)
     }
 
     //def stageReifier[N <: Nat](names :Sized[Seq[String], N], stage :ReifyStage)(implicit ev: N < _3) :(List[ReifiedType], ReifiedType) = {
-    def stageReifier(names :Seq[String], stage :ReifyStage, deps :List[ReifiedType] = List.empty[ReifiedType]) :(List[ReifiedType], ReifiedType) = {
-      val (rdeps, fullreified) = stage match {
+    def stageReifier(name :String, stage :ReifyStage)(implicit ast :ASTree) :(Option[ReifiedType], ReifiedType) = {
+      stage match {
         case Left(ReifiableType(tpe, Some(undertpe@Left(_)))) => {
           //tpe here must be a composite type, which will not be reified
-          val lookforward = stageReifier(names.tail, undertpe, deps)
-          val reified = ReifiedType(names.head, ReifiableType(tpe, Some(Right(lookforward._2))))
-          (reified +: lookforward._1, reified)
+          val lookforward = stageReifier(name, undertpe)
+          (lookforward._1, ReifiedType("", tpe, Some(lookforward._2)))
         }
-        case Left(x@ReifiableType(tpe, Some(undertpe@Right(_)))) => {
-          (ReifiedType(names.head, x) +: deps, ReifiedType(names.head, x))
+        case Left(x@ReifiableType(tpe, Some(Right(undertpe)))) => {
+          (None, ReifiedType(name, tpe, Some(undertpe)))
         }
         case Left(ltype@ReifiableType(tpe, None)) => {
-          (ReifiedType(names.head, ltype) +: deps, ReifiedType(names.head, ltype))
+          val reified = ReifiedType(name,  tpe, None)
+          (Some(reified), reified)
         }
         case Right(reified) => {
-          (deps, reified)
+          (None, reified)
         }
       }
-      (rdeps.reverse, fullreified)
     }
 
-    def reifyTypeDef(n :String, typespec :TypeOrRef)(implicit ast :ASTree) :List[Tree] = {
-      aliasReifier(n)._1.flatMap(_.defineStatements)
+    def mkDeps(x :ReifiedType)(implicit ast :ASTree) :List[Tree] = {
+      val tot = ScalaScaffold.trans(x.tpe).defineAs(x.ident).children
+      if (tot.length > 0) tot.init
+      else tot
     }
 
-    def reifyField(n :String, typespec :TypeOrRef)(implicit ast :ASTree) :(ReifiedField, List[Tree]) = {
-      val name = s"anon_$n"+"_type"
-      val (deps, reified) = stageReifier(Seq(name, name), transType(typespec))
-      (ReifiedField(n, reified), deps.flatMap(_.defineStatements))
+    def reifyField(f :StagedField)(implicit ast :ASTree) = {
+      val (deps, repr) = stageReifier(s"anon_${f.name}" + "_type", f.tpe)
+      (deps.toSeq.flatMap(mkDeps(_)).toList, new {
+        val fieldname = f.name;
+        val tpe =ScalaScaffold.trans(repr.tpe)
+        def ident = repr.ident
+        def codec = tpe.codecAs(ident)
+        def declare = tpe.declareAs(ident)
+      })
+    }
+
+    def reifyTypeDef(n :String)(implicit ast :ASTree) :List[Tree] = {
+      aliasReifier(n).left.toSeq.flatMap(mkDeps).toList
+    }
+
+    def stageField(decl :(String, TypeOrRef))(implicit ast :ASTree) :StagedField = {
+      val (n, typespec) = decl
+      val stage = transType(typespec)
+      StagedField(n, stage)
     }
 
     type EnumScheme = Seq[(String, XDRConstantLiteral)]
@@ -499,50 +514,18 @@ object ScalaScaffold {
       items
     }
 
-    type StructScheme = (Seq[ReifiedField],List[Tree])
+    type StructScheme = Seq[StagedField]
     def transStruct(x :XDRStructBody)(implicit ast :ASTree) :StructScheme = {
-
-      val inplacedefs = List.newBuilder[Tree]
-
-      val components = x.components.map(decl => {
-        val (fieldname, typespec) = reshapeDecl(decl)
-        val (field, nestdefs) = reifyField(fieldname, typespec)
-        inplacedefs ++= nestdefs
-        field
-      })
-      (components, inplacedefs.result())
+      val components = x.components.map(decl => stageField(reshapeDecl(decl)))
+      components
     }
 
-    type UnionScheme = (ReifiedField, Seq[(ReifiedField, Seq[XDRValue])], Option[ReifiedField], List[Tree])
+    type UnionScheme = (StagedField, Seq[(StagedField, Seq[XDRValue])], Option[StagedField])
     def transUnion(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
-
-      val inplacedefs = List.newBuilder[Tree]
-
-      val defaularm = x.defdecl.map(x => reshapeDecl(x) match {
-        case (fieldname, typespec) => {
-          val (field, nestdefs) = reifyField(fieldname, typespec)
-          inplacedefs ++= nestdefs
-          field
-        }
-      })
-
-      val discr = reshapeDecl(x.discriminant) match {
-        case (fieldname, typespec) => {
-          val (field, nestdefs) = reifyField(fieldname, typespec)
-          inplacedefs ++= nestdefs
-          field
-        }
-      }
-
-      val arms = x.arms.map(arm => reshapeDecl(arm.declaration) match {
-        case (fieldname, typespec) => {
-          val (field, nestdefs) = reifyField(fieldname, typespec)
-          inplacedefs ++= nestdefs
-          (field, arm.values)
-        }
-      })
-
-      (discr, arms, defaularm, inplacedefs.result())
+      val defaularm = x.defdecl.map(x => stageField(reshapeDecl(x)))
+      val discr = stageField(reshapeDecl(x.discriminant))
+      val arms = x.arms.map(arm => (stageField(reshapeDecl(arm.declaration)), arm.values))
+      (discr, arms, defaularm)
     }
 
     def reshapeType(x :XDRTypeSpecifier) :TypeOrRef = {
