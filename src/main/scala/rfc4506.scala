@@ -25,7 +25,7 @@ case class XDRFixedLengthOpaque(name :XDRIdentifierLiteral, length :XDRValue) ex
 case class XDRVariableLengthOpaque(name :XDRIdentifierLiteral, maxlength :Option[XDRValue]) extends XDRDeclaration //section 4.10
 case class XDRString(name :XDRIdentifierLiteral, maxlength :Option[XDRValue]) extends XDRDeclaration //section 4.11
 case class XDROptional(typespec :XDRTypeSpecifier, name :XDRIdentifierLiteral) extends XDRDeclaration //section 4.19
-case class XDRVoid() extends XDRDeclaration //section 4.16
+case object XDRVoid extends XDRDeclaration //section 4.16
 
 //concrete XDRValue
 //

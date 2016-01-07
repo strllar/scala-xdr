@@ -40,7 +40,7 @@ object XDRSyntax {
     def OctalConstant = rule( capture("0" ~ oneOrMore("0" | ("1" - "7"))) ~> rfc4506.OctalConstant ~WL )
 
     def Declaration :Rule1[rfc4506.XDRDeclaration] = rule {
-      ("void" ~ push(rfc4506.XDRVoid())) |
+      ("void" ~ push(rfc4506.XDRVoid)) |
       (KeyWord("opaque") ~ Identifier ~ "[" ~ Value ~ "]" ~> rfc4506.XDRFixedLengthOpaque) |
       (KeyWord("opaque") ~ Identifier ~ "<" ~ optional(Value) ~ ">" ~> rfc4506.XDRVariableLengthOpaque) |
       (KeyWord("string") ~ Identifier ~ "<" ~ optional(Value) ~  ">" ~> rfc4506.XDRString) |
