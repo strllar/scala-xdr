@@ -52,7 +52,9 @@ package object codegen {
   type TypeAComposite = XDRFixedLengthArray :+: XDRVariableLengthArray :+: XDROptional :+: CNil
   type TypeAPrimary =  XDRFixedLengthOpaque :+: XDRVariableLengthOpaque :+: XDRString :+: XDRVoid.type :+: CNil
   type TypeA = TypeAPrimary :+: TypeAComposite :+: CNil
-  type AnyType = Either[TypeSOrRef, TypeA]
+  type AnyType = Either[TypeA, TypeSOrRef]
+
+  type PureType = Either[TypeS, TypeA]
 
   case class TypeDef(ident :String, tpe :AnyType)
   case class EntityDecl(ident :String, tpe :AnyType)
@@ -70,8 +72,8 @@ package object codegen {
     implicit def caseTypeSPrimary = at[TypeSPrimary](x => liftTypePoly(Coproduct[TypeS](x)))
     implicit def caseTypeSNested = at[TypeSNested](x => liftTypePoly(Coproduct[TypeS](x)))
 
-    implicit def caseTypeA = at[TypeA](x => Right(x) :AnyType)
-    implicit def caseTypeSOrRef = at[TypeSOrRef](x => Left(x) :AnyType)
+    implicit def caseTypeA = at[TypeA](x => Left(x) :AnyType)
+    implicit def caseTypeSOrRef = at[TypeSOrRef](x => Right(x) :AnyType)
     implicit def caseTypeAPrimary = at[TypeAPrimary](x => liftTypePoly(Coproduct[TypeA](x)))
     implicit def caseTypeAComposite = at[TypeAComposite](x => liftTypePoly(Coproduct[TypeA](x)))
     implicit def caseTypeVoid = at[XDRVoid.type](x => liftTypePoly(Coproduct[TypeAPrimary](x)))
@@ -388,13 +390,13 @@ object ScalaScaffold {
     x.flatMap(scalaMapping).unify
   }
 
-  def trans(x :AnyType)(implicit ast :ASTree) :scalaType = {
+  private def trans(x :AnyType)(implicit ast :ASTree) :scalaType = {
     x.fold(
+      transA,
       _.fold(
-        id => DummyScalaType, //TODO
+        id => SemanticProcesser.resolveTypeIdent(id.ident)._2.fold(transS, transA),
         transS
-      ),
-      transA
+      )
     )
   }
 
@@ -408,19 +410,19 @@ object ScalaScaffold {
           val (name, value) = kv
           q"val ${TermName(name)} :Int = ${Constant(value.dig)}"
         })
-//        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyTypeDef(td._1))
+        val pkgstats = ast.typedefs.flatMap(td => SemanticProcesser.reifyTypeDef(td))
 
-//        pkgname.map( pn => {
-//          val pname = TermName(pn)
-//          q"""
-//            package object $pname {
-//            ..$conststat
-//            }
-//            package $pname {
-//            ..$pkgstats
-//            }
-//            """
-//        }).getOrElse(q"..${conststat ++ pkgstats}")
+        pkgname.map( pn => {
+          val pname = TermName(pn)
+          q"""
+            package object $pname {
+            ..$conststat
+            }
+            package $pname {
+            ..$pkgstats
+            }
+            """
+        }).getOrElse(q"..${conststat ++ pkgstats}")
         q""
       }
     }
@@ -449,6 +451,10 @@ object ScalaScaffold {
     }
 
 
+    trait Selector {
+      def selectCodecTerm
+      def selectHolderType
+    }
 
 //
 //    object transNestedPoly extends Poly1 {
@@ -469,14 +475,16 @@ object ScalaScaffold {
 //      anyType.select[TypeAComposite].map(transComposite)
 //    }
 
-//    def resolveTypeIdent(name :String)(implicit ast :ASTree) :(String, TypeA) = {
-//      val found = ast.typedefs.find(_.ident == name)
-//      found.get.tpe.
-//      found.get.tpe.fold(
-//        refid => resolveTypeIdent(refid.ident),
-//        tpe => (name, tpe)
-//      )
-//    }
+    def resolveTypeIdent(name :String)(implicit ast :ASTree) :(String, PureType) = {
+      val found = ast.typedefs.find(_.ident == name)
+      found.get.tpe.fold(
+        tpe => (name, Right(tpe)),
+        _.fold(
+          refid => resolveTypeIdent(refid.ident),
+          tpe => (name , Left(tpe))
+        )
+      )
+    }
 
     def resolveConst(name :String)(implicit ast :ASTree) :Option[XDRConstantLiteral] = {
       ast.constdefs.find(_._1 == name).map(_._2)
@@ -491,11 +499,8 @@ object ScalaScaffold {
 
 //    def aliasReifier(name :String)(implicit ast :ASTree) :Either[ReifiedType, ReifiedType] = {
 //      val (bottom, anyType) = resolveTypeIdent(name)
-//      val reified = ReifiedType(bottom, anyType, liftComposite(anyType).map(stageReifier(s"$name"+"_aux", _)._2))
-//      if (bottom == name) Left(reified)
-//      else Right(reified)
 //    }
-//
+
 //    //def stageReifier[N <: Nat](names :Sized[Seq[String], N], stage :ReifyStage)(implicit ev: N < _3) :(List[ReifiedType], ReifiedType) = {
 //    def stageReifier(name :String, stage :ReifyStage)(implicit ast :ASTree) :(Option[ReifiedType], ReifiedType) = {
 //      stage match {
@@ -534,9 +539,20 @@ object ScalaScaffold {
 //      })
 //    }
 //
-//    def reifyTypeDef(n :String)(implicit ast :ASTree) :List[Tree] = {
+    def mkScope(ident :String, tpe :PureType): Unit = {
+
+    }
+    def transField(name :String, anyType: AnyType) {}
+
+    def reifyTypeDef(td :TypeDef)(implicit ast :ASTree) :List[Tree] = {
+//      td.tpe.fold(
+//      _.fold(
+//      idref =>
+//      )
+//      )
 //      aliasReifier(n).left.toSeq.flatMap(mkDeps).toList
-//    }
+      List.empty[Tree]
+    }
 
     type EnumScheme = Seq[(String, XDRConstantLiteral)]
     def transEnum(x :XDREnumBody)(implicit ast :ASTree) :EnumScheme = {
