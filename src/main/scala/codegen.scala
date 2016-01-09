@@ -48,16 +48,28 @@ package object codegen {
   type TypeSNested =  XDRStructure :+: XDRUnion :+: CNil
   type TypeSPrimary = XDRInteger.type :+: XDRUnsignedInteger.type :+: XDRHyper :+: XDRFloat.type  :+: XDRDouble.type  :+: XDRQuadruple.type :+: XDRBoolean.type :+: XDREnumeration :+: CNil
   type TypeS = TypeSPrimary :+: TypeSNested :+: CNil
-  type TypeSOrRef = Either[XDRIdentifierLiteral, TypeS]
+  type TypeSOrRef = Either[TypeS, XDRIdentifierLiteral]
   type TypeAComposite = XDRFixedLengthArray :+: XDRVariableLengthArray :+: XDROptional :+: CNil
   type TypeAPrimary =  XDRFixedLengthOpaque :+: XDRVariableLengthOpaque :+: XDRString :+: XDRVoid.type :+: CNil
   type TypeA = TypeAPrimary :+: TypeAComposite :+: CNil
-  type AnyType = Either[TypeA, TypeSOrRef]
+  type TypeAny = Either[TypeA, TypeSOrRef]
 
   type PureType = Either[TypeS, TypeA]
+  object asPureType extends Poly1{
+    implicit def caseS = at[TypeS](Left(_) :PureType)
+    implicit def caseA = at[TypeA](Right(_) :PureType)
+  }
 
-  case class TypeDef(ident :String, tpe :AnyType)
-  case class EntityDecl(ident :String, tpe :AnyType)
+  type ReifiedInfo = (PureType, String)
+  type ReifiableInfoS = Either[TypeS, ReifiedInfo]
+  type ReifiableInfoA =  Either[PureType, ReifiedInfo] //seems useless
+
+  def ReifiedInfo(ident :String, tpe :PureType) :ReifiedInfo = (tpe, ident)
+
+  type FullReifiableInfo = Either[ReifiableInfoS, (TypeA, Option[ReifiableInfoS])]
+
+  case class TypeDef(ident :String, tpe :TypeAny)
+  case class EntityDecl(ident :String, info :FullReifiableInfo)
 
 
 
@@ -68,12 +80,12 @@ package object codegen {
 
 
   object liftTypePoly extends Poly1 {
-    implicit def caseTypeS = at[TypeS](x => Right(x) :TypeSOrRef)
+    implicit def caseTypeS = at[TypeS](x => Left(x) :TypeSOrRef)
     implicit def caseTypeSPrimary = at[TypeSPrimary](x => liftTypePoly(Coproduct[TypeS](x)))
     implicit def caseTypeSNested = at[TypeSNested](x => liftTypePoly(Coproduct[TypeS](x)))
 
-    implicit def caseTypeA = at[TypeA](x => Left(x) :AnyType)
-    implicit def caseTypeSOrRef = at[TypeSOrRef](x => Right(x) :AnyType)
+    implicit def caseTypeA = at[TypeA](x => Left(x) :TypeAny)
+    implicit def caseTypeSOrRef = at[TypeSOrRef](x => Right(x) :TypeAny)
     implicit def caseTypeAPrimary = at[TypeAPrimary](x => liftTypePoly(Coproduct[TypeA](x)))
     implicit def caseTypeAComposite = at[TypeAComposite](x => liftTypePoly(Coproduct[TypeA](x)))
     implicit def caseTypeVoid = at[XDRVoid.type](x => liftTypePoly(Coproduct[TypeAPrimary](x)))
@@ -110,6 +122,7 @@ object ScalaScaffold {
     object DummyScalaType extends scalaType
     val DummyStatement = q""
 
+  object
     class XDREnumType(enum :SemanticProcesser.EnumScheme) extends scalaType {
       override def defineAs(name :String)(implicit ast :ASTree) = {
         val itemstats = enum.map(item =>
@@ -133,30 +146,44 @@ object ScalaScaffold {
       override def declareAs(tpe :String) =  tq"${TermName(tpe)}.Enum"
     }
 
-    class XDRStructType(items :SemanticProcesser.StructScheme) extends scalaType {
-//      override def defineAs(name :String)(implicit ast :ASTree) = {
-//        val inplacedefs = items.flatMap(f => SemanticProcesser.reifyField(f)._1)
-//        val components =  items.map(f => SemanticProcesser.reifyField(f)._2)
-//
-//        val codec = components.init.foldRight(q"${components.last.codec}")(
-//          (c, acc) => {
-//            q"$acc.::(${c.codec})"
-//          }
-//        )
-//        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.declare))
-//
-//        q"""{
-//           object ${TermName(name)} {
-//           ..$inplacedefs
-//           case class Components(..$decls)
-//           type Struct = ${TypeName(name)}
-//           implicit def codec :Codec[Struct] = (
-//           $codec
-//           ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
-//           }
-//           class ${TypeName(name)}(val ${TermName("*")} :${TermName(name)}.Components)
-//        }"""
-//      }
+  def getRefiedName(tpe :ReifiableInfoS) :Option[String] = {
+    tpe.right.toOption.map(_._2)
+  }
+
+  def transReifiedField(fd :EntityDecl)(implicit ast :ASTree) = {
+    new {
+      val (tpehint, tpe) = fd.info.fold(
+        _.fold(
+          tpes => (None, transS(tpes)),
+          refied => (Some(refied._2), trans(refied._1))
+        ),
+        x => (x._1.map(getRefiedName))
+      )
+    }
+  }
+    class XDRStructType(items :SemanticProcesser.StructScheme, inplacedefs :List[Tree]) extends scalaType {
+      override def defineAs(name :String)(implicit ast :ASTree) = {
+        val components =  items.map(f => SemanticProcesser.reifyField(f)._2)
+
+        val codec = components.init.foldRight(q"${components.last.codec}")(
+          (c, acc) => {
+            q"$acc.::(${c.codec})"
+          }
+        )
+        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.declare))
+
+        q"""{
+           object ${TermName(name)} {
+           ..$inplacedefs
+           case class Components(..$decls)
+           type Struct = ${TypeName(name)}
+           implicit def codec :Codec[Struct] = (
+           $codec
+           ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
+           }
+           class ${TypeName(name)}(val ${TermName("*")} :${TermName(name)}.Components)
+        }"""
+      }
     }
 
     class XDRUnionType(union :SemanticProcesser.UnionScheme) extends scalaType {
@@ -230,10 +257,14 @@ object ScalaScaffold {
 
     object nestedMapping extends Poly1 {
       implicit def caseStruct(implicit ast :ASTree) = at[XDRStructure](x => {
-        new XDRStructType(SemanticProcesser.transStruct(x.body))
+        val (innerdefs, scheme) = SemanticProcesser.reshape(x.body).map( c => {
+          val (deps, newc) = SemanticProcesser.reifyField(c)
+          (deps.toSeq.flatMap(SemanticProcesser.reify), newc)
+        }).unzip
+        new XDRStructType(scheme, innerdefs.flatten.toList)
       })
       implicit def caseUnion(implicit ast :ASTree) = at[XDRUnion](x => {
-        new XDRUnionType(SemanticProcesser.transUnion(x.body))
+        new XDRUnionType(SemanticProcesser.reshape(x.body))
       })
     }
 
@@ -364,7 +395,7 @@ object ScalaScaffold {
         })
 
       implicit def caseEnum(implicit ast :ASTree) = at[XDREnumeration](x =>  {
-        new XDREnumType(SemanticProcesser.transEnum(x.body))
+        new XDREnumType(SemanticProcesser.reshape(x.body))
       })
 
       implicit def caseNested(implicit mapper: Mapper[nestedMapping.type, TypeSNested], ast :ASTree) = at[TypeSNested](
@@ -390,12 +421,16 @@ object ScalaScaffold {
     x.flatMap(scalaMapping).unify
   }
 
-  private def trans(x :AnyType)(implicit ast :ASTree) :scalaType = {
+  def trans(x :PureType)(implicit ast :ASTree) :scalaType = {
+    x.fold(transS, transA)
+  }
+
+  private def transAny(x :TypeAny)(implicit ast :ASTree) :scalaType = {
     x.fold(
       transA,
       _.fold(
-        id => SemanticProcesser.resolveTypeIdent(id.ident)._2.fold(transS, transA),
-        transS
+        transS,
+        id => SemanticProcesser.resolveTypeIdent(id.ident)._2.fold(transS, transA)
       )
     )
   }
@@ -433,55 +468,26 @@ object ScalaScaffold {
   object SemanticProcesser {
     import Extractors._
 
-    sealed trait ReifiedScope {
-      def ident: String
-      def tpe: AnyType
+    object transCompositePoly extends Poly1 {
+      implicit def caseArrayF = at[XDRFixedLengthArray](x => transTypeSpec(x.typespec))
+      implicit def caseArrayV = at[XDRVariableLengthArray](x => transTypeSpec(x.typespec))
+      implicit def caseOption = at[XDROptional](x => transTypeSpec(x.typespec))
     }
 
-    case class NaturalScope(namehint :String, under :TypeSNested) extends ReifiedScope {
-      def ident = s"anony_$namehint" + "_type"
-      def tpe = liftType(liftType(under))
+    def resolveComposite(ct :TypeAComposite)(implicit ast :ASTree) :ReifiableInfoS = {
+      resolveTypeS(ct.map(transCompositePoly).unify)
     }
-
-    case class TopScope(ident :String, tpe :AnyType) extends ReifiedScope
-
-    case class AnonEnumScope(namehint :String, under :XDREnumeration) extends ReifiedScope {
-      def ident = s"anony_$namehint" + "_type"
-      def tpe = liftType(liftType(Coproduct[TypeSPrimary](under)))
+    def liftComposite(anyType :TypeA)(implicit ast :ASTree) :Option[ReifiableInfoS] =  {
+      anyType.select[TypeAComposite].map(resolveComposite)
     }
-
-
-    trait Selector {
-      def selectCodecTerm
-      def selectHolderType
-    }
-
-//
-//    object transNestedPoly extends Poly1 {
-//      implicit def caseStruct = at[XDRStructure]
-//      implicit def caseUnion = at[XDRUnion]
-//    }
-//
-//    object transCompositePoly extends Poly1 {
-//      implicit def caseArrayF = at[XDRFixedLengthArray](x => transTypeSpec(x.typespec))
-//      implicit def caseArrayV = at[XDRVariableLengthArray](x => transTypeSpec(x.typespec))
-//      implicit def caseOption = at[XDROptional](x => transTypeSpec(x.typespec))
-//    }
-//
-//    def transComposite(ct :TypeAComposite)(implicit ast :ASTree) :ReifyScope = {
-//      transType(ct.map(transCompositePoly).unify)
-//    }
-//    def liftComposite(anyType :TypeA)(implicit ast :ASTree) :Option[ReifyScope] =  {
-//      anyType.select[TypeAComposite].map(transComposite)
-//    }
 
     def resolveTypeIdent(name :String)(implicit ast :ASTree) :(String, PureType) = {
       val found = ast.typedefs.find(_.ident == name)
       found.get.tpe.fold(
         tpe => (name, Right(tpe)),
         _.fold(
-          refid => resolveTypeIdent(refid.ident),
-          tpe => (name , Left(tpe))
+          tpe => (name , Left(tpe)),
+          refid => resolveTypeIdent(refid.ident)
         )
       )
     }
@@ -490,59 +496,74 @@ object ScalaScaffold {
       ast.constdefs.find(_._1 == name).map(_._2)
     }
 
-//    def transType(typespec :TypeSOrRef)(implicit ast :ASTree) :ReifyScope = {
-//      typespec.fold(
-//        x => ReifyStage,
-//        ta => ReifyStage
-//      )
-//    }
-
-//    def aliasReifier(name :String)(implicit ast :ASTree) :Either[ReifiedType, ReifiedType] = {
-//      val (bottom, anyType) = resolveTypeIdent(name)
-//    }
-
-//    //def stageReifier[N <: Nat](names :Sized[Seq[String], N], stage :ReifyStage)(implicit ev: N < _3) :(List[ReifiedType], ReifiedType) = {
-//    def stageReifier(name :String, stage :ReifyStage)(implicit ast :ASTree) :(Option[ReifiedType], ReifiedType) = {
-//      stage match {
-//        case Left(ReifiableType(tpe, Some(undertpe@Left(_)))) => {
-//          //tpe here must be a composite type, which will not be reified
-//          val lookforward = stageReifier(name, undertpe)
-//          (lookforward._1, ReifiedType("", tpe, Some(lookforward._2)))
-//        }
-//        case Left(x@ReifiableType(tpe, Some(Right(undertpe)))) => {
-//          (None, ReifiedType(name, tpe, Some(undertpe)))
-//        }
-//        case Left(ltype@ReifiableType(tpe, None)) => {
-//          val reified = ReifiedType(name,  tpe, None)
-//          (Some(reified), reified)
-//        }
-//        case Right(reified) => {
-//          (None, reified)
-//        }
-//      }
-//    }
-//
-//    def mkDeps(x :ReifiedType)(implicit ast :ASTree) :List[Tree] = {
-//      val tot = ScalaScaffold.trans(x.tpe).defineAs(x.ident).children
-//      if (tot.length > 0) tot.init
-//      else tot
-//    }
-//
-//    def reifyField(f :StagedField)(implicit ast :ASTree) = {
-//      val (deps, repr) = stageReifier(s"anon_${f.name}" + "_type", f.tpe)
-//      (deps.toSeq.flatMap(mkDeps(_)).toList, new {
-//        val fieldname = f.name;
-//        val tpe =ScalaScaffold.trans(repr.tpe)
-//        def ident = repr.ident
-//        def codec = tpe.codecAs(ident)
-//        def declare = tpe.declareAs(ident)
-//      })
-//    }
-//
-    def mkScope(ident :String, tpe :PureType): Unit = {
-
+    def resolveTypeS(typeSOrRef: TypeSOrRef)(implicit ast :ASTree) :ReifiableInfoS = {
+      typeSOrRef.fold(
+        tpe => Left(tpe),
+        refid => Right(resolveTypeAlias(refid.ident))
+      )
     }
-    def transField(name :String, anyType: AnyType) {}
+
+    def resolveTypeA(typeAny: TypeAny)(implicit ast :ASTree) :ReifiableInfoA = {
+      typeAny.fold(
+        tpe => Left(Right(tpe)),
+        _.fold(
+          tpe => Left(Left(tpe)),
+          refid => Right(resolveTypeAlias(refid.ident))
+        )
+      )
+    }
+
+    def resolveTypeAlias(name :String)(implicit ast :ASTree) :ReifiedInfo = {
+      val (bottomname, bottomtpe) = resolveTypeIdent(name)
+      (bottomtpe, name)
+    }
+
+    def resolveTypeFull(typeAny: TypeAny)(implicit ast :ASTree) :FullReifiableInfo = {
+      typeAny.fold(
+        tpea => Right(tpea, liftComposite(tpea)),
+        _.fold(
+          tpes => Left(Left(tpes)),
+          refid => Left(Right(resolveTypeAlias(refid.ident)))
+        )
+      )
+    }
+
+    def reshapeDeclAsEntity(x :XDRDeclaration)(implicit ast :ASTree): EntityDecl = {
+      val (name :String, anyType: TypeAny) = transDecl(x)
+      EntityDecl(name, resolveTypeFull(anyType))
+    }
+
+    def isNested(tpes :TypeS) :Boolean = {
+      if (tpes.select[TypeSNested].isDefined) true
+      else if (
+        tpes.select[TypeSPrimary].flatMap(
+          _.select[XDREnumeration]
+        ).isDefined
+      ) true
+      else false
+    }
+
+    def reifyField(fd :EntityDecl)(implicit ast :ASTree) : (Option[ReifiedInfo], EntityDecl) = {
+      fd.info match {
+        case Left(Left(tpes)) if isNested(tpes) => {
+          val refied = ReifiedInfo(s"anony", asPureType(tpes))
+          (Some(refied), fd.copy(info = Left(Right(refied))))
+        }
+        case Right((comptpe, Some(Left(tpes)))) if isNested(tpes) => {
+          val refied = ReifiedInfo(s"anony", asPureType(tpes))
+          (Some(refied), fd.copy(info = Right((comptpe, Some(Right(refied))))))
+        }
+        case _ => {
+          (None, fd)
+        }
+      }
+    }
+
+    def reify(info :ReifiedInfo) :List[Tree] = {
+      val stats = ScalaScaffold.trans(info._1).defineAs(info._2).children
+      if (stats.size > 0) stats.init
+      else stats
+    }
 
     def reifyTypeDef(td :TypeDef)(implicit ast :ASTree) :List[Tree] = {
 //      td.tpe.fold(
@@ -555,7 +576,7 @@ object ScalaScaffold {
     }
 
     type EnumScheme = Seq[(String, XDRConstantLiteral)]
-    def transEnum(x :XDREnumBody)(implicit ast :ASTree) :EnumScheme = {
+    def reshape(x :XDREnumBody)(implicit ast :ASTree) :EnumScheme = {
       val items = x.items.map(item => (
         item._1.ident,
         item._2.dig.fold(
@@ -566,22 +587,22 @@ object ScalaScaffold {
     }
 
     type StructScheme = Seq[EntityDecl]
-    def transStruct(x :XDRStructBody)(implicit ast :ASTree) :StructScheme = {
-      val components = x.components.map(decl => EntityDecl.tupled(transDecl(decl)))
+    def reshape(x :XDRStructBody)(implicit ast :ASTree) :StructScheme = {
+      val components = x.components.map(reshapeDeclAsEntity)
       components
     }
 
     type UnionScheme = (EntityDecl, Seq[(EntityDecl, Seq[XDRValue])], Option[EntityDecl])
-    def transUnion(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
-      val defaularm = x.defdecl.map(x => EntityDecl.tupled(transDecl(x)))
-      val discr = EntityDecl.tupled(transDecl(x.discriminant))
-      val arms = x.arms.map(arm => (EntityDecl.tupled(transDecl(arm.declaration)), arm.values))
+    def reshape(x :XDRUnionBody)(implicit ast :ASTree) :UnionScheme = {
+      val defaularm = x.defdecl.map(reshapeDeclAsEntity)
+      val discr = reshapeDeclAsEntity(x.discriminant)
+      val arms = x.arms.map(arm => (reshapeDeclAsEntity(arm.declaration), arm.values))
       (discr, arms, defaularm)
     }
 
     def transTypeSpec(x :XDRTypeSpecifier) :TypeSOrRef = {
       x match {
-        case XDRIdentifierTypeSpecifier(alias) => Left(alias)
+        case XDRIdentifierTypeSpecifier(alias) => Right(alias)
         case x@XDRInteger => liftType(Coproduct[TypeSPrimary](x))
         case x@XDRUnsignedInteger => liftType(Coproduct[TypeSPrimary](x))
         case x@XDRHyper(_) => liftType(Coproduct[TypeSPrimary](x))
@@ -595,7 +616,7 @@ object ScalaScaffold {
       }
     }
 
-    def transDecl(x :XDRDeclaration) :(String, AnyType) = {
+    def transDecl(x :XDRDeclaration) :(String, TypeAny) = {
       x match {
         case XDRPlainDeclaration(x, XDRIdentifierLiteral(name)) => (name, liftType(transTypeSpec(x)))
         case x@XDRFixedLengthArray(_, XDRIdentifierLiteral(name), _) => (name, liftType(Coproduct[TypeAComposite](x)))
