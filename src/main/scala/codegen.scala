@@ -66,10 +66,8 @@ package object codegen {
 
   def ReifiedInfo(ident :String, tpe :PureType) :ReifiedInfo = (tpe, ident)
 
-  type FullReifiableInfo = Either[ReifiableInfoS, (TypeA, Option[ReifiableInfoS])]
-
   case class TypeDef(ident :String, tpe :TypeAny)
-  case class EntityDecl(ident :String, info :FullReifiableInfo)
+  case class EntityDecl(ident :String, info :TypeAny)
 
 
 
@@ -122,7 +120,6 @@ object ScalaScaffold {
     object DummyScalaType extends scalaType
     val DummyStatement = q""
 
-  object
     class XDREnumType(enum :SemanticProcesser.EnumScheme) extends scalaType {
       override def defineAs(name :String)(implicit ast :ASTree) = {
         val itemstats = enum.map(item =>
@@ -146,44 +143,29 @@ object ScalaScaffold {
       override def declareAs(tpe :String) =  tq"${TermName(tpe)}.Enum"
     }
 
-  def getRefiedName(tpe :ReifiableInfoS) :Option[String] = {
-    tpe.right.toOption.map(_._2)
-  }
-
-  def transReifiedField(fd :EntityDecl)(implicit ast :ASTree) = {
-    new {
-      val (tpehint, tpe) = fd.info.fold(
-        _.fold(
-          tpes => (None, transS(tpes)),
-          refied => (Some(refied._2), trans(refied._1))
-        ),
-        x => (x._1.map(getRefiedName))
-      )
-    }
-  }
     class XDRStructType(items :SemanticProcesser.StructScheme, inplacedefs :List[Tree]) extends scalaType {
-      override def defineAs(name :String)(implicit ast :ASTree) = {
-        val components =  items.map(f => SemanticProcesser.reifyField(f)._2)
-
-        val codec = components.init.foldRight(q"${components.last.codec}")(
-          (c, acc) => {
-            q"$acc.::(${c.codec})"
-          }
-        )
-        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.declare))
-
-        q"""{
-           object ${TermName(name)} {
-           ..$inplacedefs
-           case class Components(..$decls)
-           type Struct = ${TypeName(name)}
-           implicit def codec :Codec[Struct] = (
-           $codec
-           ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
-           }
-           class ${TypeName(name)}(val ${TermName("*")} :${TermName(name)}.Components)
-        }"""
-      }
+//      override def defineAs(name :String)(implicit ast :ASTree) = {
+//        val components =  items.map(f => SemanticProcesser.reifyField(f)._2)
+//
+//        val codec = components.init.foldRight(q"${components.last.codec}")(
+//          (c, acc) => {
+//            q"$acc.::(${c.codec})"
+//          }
+//        )
+//        val decls = components.map(c => Typed(q"${TermName(c.fieldname)}", c.declare))
+//
+//        q"""{
+//           object ${TermName(name)} {
+//           ..$inplacedefs
+//           case class Components(..$decls)
+//           type Struct = ${TypeName(name)}
+//           implicit def codec :Codec[Struct] = (
+//           $codec
+//           ).as[Components].xmap(new Struct(${pq"_"}), ${pq"_"}.${TermName("*")})
+//           }
+//           class ${TypeName(name)}(val ${TermName("*")} :${TermName(name)}.Components)
+//        }"""
+//      }
     }
 
     class XDRUnionType(union :SemanticProcesser.UnionScheme) extends scalaType {
@@ -257,11 +239,12 @@ object ScalaScaffold {
 
     object nestedMapping extends Poly1 {
       implicit def caseStruct(implicit ast :ASTree) = at[XDRStructure](x => {
-        val (innerdefs, scheme) = SemanticProcesser.reshape(x.body).map( c => {
-          val (deps, newc) = SemanticProcesser.reifyField(c)
-          (deps.toSeq.flatMap(SemanticProcesser.reify), newc)
-        }).unzip
-        new XDRStructType(scheme, innerdefs.flatten.toList)
+//        val (innerdefs, scheme) = SemanticProcesser.reshape(x.body).map( c => {
+//          val (deps, newc) = SemanticProcesser.reifyField(c)
+//          (deps.toSeq.flatMap(SemanticProcesser.reify), newc)
+//        }).unzip
+//        new XDRStructType(scheme, innerdefs.flatten.toList)
+        DummyScalaType
       })
       implicit def caseUnion(implicit ast :ASTree) = at[XDRUnion](x => {
         new XDRUnionType(SemanticProcesser.reshape(x.body))
@@ -435,6 +418,24 @@ object ScalaScaffold {
     )
   }
 
+  def statementsInScope(tree :Tree) :List[Tree] = {
+    val chlds = tree.children
+    if (chlds.isEmpty) chlds
+    else chlds.init
+  }
+
+  def reifyValueHolder(tpe :TypeAny) :List[Tree] = {
+    //TODO
+    List.empty[Tree]
+  }
+
+  def createObject(name :String, stats :List[Tree]) :List[Tree] = {
+    statementsInScope(q"""
+         object ${TermName(name)} {
+         ..$stats
+         }
+       """)
+  }
 
   class Snippet(val pkgname :Option[String]) {
       import Extractors._
@@ -467,6 +468,13 @@ object ScalaScaffold {
 
   object SemanticProcesser {
     import Extractors._
+
+
+    case class ScalaRepr()
+    case class ScalaTrans()
+    case class ScalaCodec() //as codec[ScalaRepr]
+    case class CompileTypeMutation(repr :ScalaRepr, trans :ScalaTrans)
+    case class TargetType(holder :ScalaRepr, codec :ScalaCodec, mutations :List[CompileTypeMutation])
 
     object transCompositePoly extends Poly1 {
       implicit def caseArrayF = at[XDRFixedLengthArray](x => transTypeSpec(x.typespec))
@@ -518,19 +526,19 @@ object ScalaScaffold {
       (bottomtpe, name)
     }
 
-    def resolveTypeFull(typeAny: TypeAny)(implicit ast :ASTree) :FullReifiableInfo = {
-      typeAny.fold(
-        tpea => Right(tpea, liftComposite(tpea)),
-        _.fold(
-          tpes => Left(Left(tpes)),
-          refid => Left(Right(resolveTypeAlias(refid.ident)))
-        )
-      )
-    }
+//    def resolveTypeFull(typeAny: TypeAny)(implicit ast :ASTree) :FullReifiableInfo = {
+//      typeAny.fold(
+//        tpea => Right(tpea, liftComposite(tpea)),
+//        _.fold(
+//          tpes => Left(Left(tpes)),
+//          refid => Left(Right(resolveTypeAlias(refid.ident)))
+//        )
+//      )
+//    }
 
     def reshapeDeclAsEntity(x :XDRDeclaration)(implicit ast :ASTree): EntityDecl = {
       val (name :String, anyType: TypeAny) = transDecl(x)
-      EntityDecl(name, resolveTypeFull(anyType))
+      EntityDecl(name, anyType)
     }
 
     def isNested(tpes :TypeS) :Boolean = {
@@ -543,36 +551,119 @@ object ScalaScaffold {
       else false
     }
 
-    def reifyField(fd :EntityDecl)(implicit ast :ASTree) : (Option[ReifiedInfo], EntityDecl) = {
-      fd.info match {
-        case Left(Left(tpes)) if isNested(tpes) => {
-          val refied = ReifiedInfo(s"anony", asPureType(tpes))
-          (Some(refied), fd.copy(info = Left(Right(refied))))
-        }
-        case Right((comptpe, Some(Left(tpes)))) if isNested(tpes) => {
-          val refied = ReifiedInfo(s"anony", asPureType(tpes))
-          (Some(refied), fd.copy(info = Right((comptpe, Some(Right(refied))))))
-        }
-        case _ => {
-          (None, fd)
-        }
-      }
-    }
+//    def reifyField(fd :EntityDecl)(implicit ast :ASTree) : (Option[ReifiedInfo], EntityDecl) = {
+//      fd.info match {
+//        case Left(Left(tpes)) if isNested(tpes) => {
+//          val refied = ReifiedInfo(s"anony", asPureType(tpes))
+//          (Some(refied), fd)
+//        }
+//        case Right((comptpe, Some(Left(tpes)))) if isNested(tpes) => {
+//          val refied = ReifiedInfo(s"anony", asPureType(tpes))
+//          (Some(refied), fd.copy(info = Right((comptpe, Some(Right(refied))))))
+//        }
+//        case _ => {
+//          (None, fd)
+//        }
+//      }
+//    }
 
-    def reify(info :ReifiedInfo) :List[Tree] = {
+
+    def reify(info :ReifiedInfo)(implicit ast :ASTree) :List[Tree] = {
       val stats = ScalaScaffold.trans(info._1).defineAs(info._2).children
       if (stats.size > 0) stats.init
       else stats
     }
 
+    object TypeSPoly extends Poly1 {
+//
+//      implicit def caseInt = at[XDRInteger.type](x =>
+//        new scalaType {
+//          override def declareAs(tpe :String) :Tree = tq"Int"
+//          override def codecAs(name :String) :Tree = q"XDRInteger"
+//        })
+//      implicit def caseUInt = at[XDRUnsignedInteger.type](x =>
+//        new scalaType {
+//          override def declareAs(tpe :String) :Tree = tq"Long"
+//          override def codecAs(name :String) :Tree = q"XDRUnsignedInteger"
+//        })
+//      implicit def caseHyper = at[XDRHyper](x =>
+//        new scalaType {
+//          override def declareAs(tpe :String) :Tree =
+//            if (x.signed) tq"Long"
+//            else tq"BigInt"
+//          override def codecAs(name :String) :Tree =
+//            if (x.signed) q"XDRHyper"
+//            else q"XDRUnsignedHyper"
+//        })
+//      implicit def caseFloat = at[XDRFloat.type](x =>
+//        new scalaType {
+//          override def declareAs(tpe :String) :Tree = tq"Float"
+//          override def codecAs(name :String) :Tree = q"XDRFloat"
+//        })
+//      implicit def caseDouble = at[XDRDouble.type](x =>
+//        new scalaType {
+//          override def declareAs(tpe :String) :Tree = tq"Double"
+//          override def codecAs(name :String) :Tree = q"XDRDouble"
+//        })
+//      implicit def caseQuad = at[XDRQuadruple.type](_ => DummyScalaType) //TODO
+//      //      (x =>
+//      //        new scalaType {
+//      //          override def declareAs(name :String, tpe :String) :Tree = Typed(q"${TermName(name)}", tq"BigDecimal")
+//      //          override def codecAs(name :String) :Tree = q"XDRQuadruple"
+//      //        })
+//
+//      implicit def caseBoolean = at[XDRBoolean.type](x =>
+//        new scalaType {
+//          override def declareAs(tpe :String) :Tree = tq"Boolean"
+//          override def codecAs(name :String) :Tree = q"XDRBoolean"
+//        })
+
+    }
+    object TypeAPoly extends Poly1 {
+
+    }
+
+    case class tpeWrapperInfo() {
+      //TODO?
+    }
+
+    def wrapAs(name :String, typeAny: TypeAny) = {
+
+    }
+
+
+    abstract class HomomorphicScope(val parent :Option[HomomorphicScope]) {
+      //scopes rule in rfc4506 section 6.4
+      //
+      def mapVar(name :String, nest :TypeAny): Unit = {
+      }
+    }
+
+    object NamespaceScope extends HomomorphicScope(None) {
+      def mapType(ident :String, tpe :TypeAny): List[Tree] = {
+        //TODO
+        val stats =
+          ScalaScaffold.reifyValueHolder(tpe) ++
+            //TODO codec, bridges
+            List.empty[Tree]
+        //TODO end
+        ScalaScaffold.createObject(ident, stats)
+      }
+
+      def mapConst(ident :String, v :XDRValue): Unit = {
+
+      }
+    }
+
     def reifyTypeDef(td :TypeDef)(implicit ast :ASTree) :List[Tree] = {
+
 //      td.tpe.fold(
 //      _.fold(
 //      idref =>
 //      )
 //      )
 //      aliasReifier(n).left.toSeq.flatMap(mkDeps).toList
-      List.empty[Tree]
+      NamespaceScope.mapType(td.ident, td.tpe)
     }
 
     type EnumScheme = Seq[(String, XDRConstantLiteral)]
