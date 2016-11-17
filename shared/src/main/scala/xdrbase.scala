@@ -15,11 +15,33 @@ object annotations {
     annottees(0)
   }
 
-  final class xdrfile extends StaticAnnotation {
-    def macroTransform(annottees: Any*): Any = macro xdrfileImpl
+  final class xdrfile(val ns :String) extends StaticAnnotation {
+    //def macroTransform(annottees: Any*): Any = macro xdrfileImpl
+  }
+}
+
+class MacroBundle(val c: blackbox.Context) {
+  import c.universe._
+  def fromBytesImpl[T: c.WeakTypeTag](bs: c.Expr[Seq[Byte]]) :c.Expr[T] = {
+    val tpe = weakTypeOf[T]
+    c.Expr[T](q"""new $tpe()""")
+  }
+
+  def toBytesImpl[T: c.WeakTypeTag](v: c.Expr[T]) :c.Expr[ByteBuffer] = {
+    c.Expr[ByteBuffer](q"""java.nio.ByteBuffer.allocate(1)""")
+  }
+
+  def checkAnnotationsImpl[T: c.WeakTypeTag] :c.Expr[Unit] = {
+    weakTypeOf[T].typeSymbol.asClass.annotations.foreach( an => {
+      println(an, showRaw(an.tree))
+    })
+    c.Expr[Unit](q"")
   }
 }
 
 object XDRCodec {
+  def fromBytes[T](bs :Seq[Byte]) :T = macro MacroBundle.fromBytesImpl[T]
+  def toBytes[T](v :T) :ByteBuffer = macro MacroBundle.toBytesImpl[T]
+  def checkAnnotations[T] :Unit = macro MacroBundle.checkAnnotationsImpl[T]
 }
 
