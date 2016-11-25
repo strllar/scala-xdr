@@ -20,7 +20,7 @@ lazy val xdrbase = crossProject.crossType(CrossType.Full).in(file(".")).
      //libraryDependencies += "org.scalacheck" %% "scalacheck" % "1.12.1" % "test"
      testOptions in Test += Tests.Argument(TestFrameworks.ScalaCheck),
      resolvers += Resolver.sonatypeRepo("releases"),
-     addCompilerPlugin("org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full)
+     addCompilerPlugin("org.scalameta" % "paradise" % "3.0.0-M5" cross CrossVersion.full)
    )
 
 lazy val targetJVM = xdrbase.jvm
