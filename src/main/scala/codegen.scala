@@ -1,7 +1,8 @@
 package org.strllar.scalaxdr
 
 import scala.collection.mutable.ListBuffer
-import scala.reflect.runtime.universe._
+import scala.meta._
+import scala.meta.contrib._
 import rfc4506._
 
 object Extractors {
@@ -33,7 +34,7 @@ object Extractors {
       )
     ) yield str
 
-    //def ident = TermName("discriminant_" + allstr.mkString("_")
+    //def ident = Term.Name("discriminant_" + allstr.mkString("_")
     def ident = allstr.mkString("_")
   }
 }
@@ -97,7 +98,7 @@ package object codegen {
   def genScala(ns :String, spec :XDRSpecification) :scala.io.Source = {
     scala.io.Source.fromIterable(
       genAST(ns, spec).children.init.flatMap(
-        showCode(_) +  System.lineSeparator()
+        _.syntax +  System.lineSeparator()
       )
     )
   }
@@ -110,25 +111,25 @@ import scala.annotation.tailrec
 object ScalaScaffold {
   import Extractors._
 
-  def createObject(name :String, stats :List[Tree]) :Tree = {
+  def createObject(name :String, stats :List[Stat]) :Stat = {
     q"""
-         object ${TermName(name)} {
+         object ${Term.Name(name)} {
          ..$stats
          }
        """
   }
 
   sealed trait ScalaRawType {
-    def tree: Tree
+    def tree: Type
   }
   sealed trait ScalaRawHolder {
 
   }
-  case class ScalaTerm(name :TermName, tpe :ScalaRawType) extends ScalaRawHolder
-  case class ScalaCodecExpr(tree :Tree, tpe :ScalaFragmentType)
-  case class ScalaPrimaryType(tree :Tree) extends ScalaRawType
-  case class ScalaHType(tree :Tree) //TODO: extends ScalaRawType(tree.children...)
-  case class ScalaCType(tree :Tree) //TODO: extends ScalaRawType(tree.children...)
+  case class ScalaTerm(name :Term.Name, tpe :ScalaRawType) extends ScalaRawHolder
+  case class ScalaCodecExpr(tree :Term, tpe :ScalaFragmentType)
+  case class ScalaPrimaryType(tree :Type) extends ScalaRawType
+  case class ScalaHType(tree :Stat) //TODO: extends ScalaRawType(tree.children...)
+  case class ScalaCType(tree :Stat) //TODO: extends ScalaRawType(tree.children...)
 
   case class ScalaFragmentType(mirror :ScalaRawType)
   case class ScalaFragmentHolder(mirror :ScalaTerm, tpe :ScalaFragmentType)
@@ -143,7 +144,7 @@ object ScalaScaffold {
     def concreteRepr :Seq[(ScalaRawType, ScalaTerms => ScalaWrappedHolder)]
     //def placedAs(name :String) :List[Tree]
   }
-  case class scalaPrimaryTemplate(tpe :Tree, codec :Tree) extends scalaTemplate {
+  case class scalaPrimaryTemplate(tpe :Type, codec :Term) extends scalaTemplate {
     val rawtpe = new ScalaRawType{
       override def tree = tpe
     }
@@ -152,7 +153,7 @@ object ScalaScaffold {
     override def concreteRepr = Seq.empty
   }
   case class scalaDefualtCompoundTemplate() extends scalaTemplate {
-    override def defaultCodec = ScalaCodecExpr(q"XDRVoid", ScalaFragmentType(ScalaPrimaryType(tq"Unit")))
+    override def defaultCodec = ScalaCodecExpr(q"XDRVoid", ScalaFragmentType(ScalaPrimaryType(t"Unit")))
     override def defaultRepr = None
     override def concreteRepr = Seq.empty
   }
@@ -161,35 +162,35 @@ object ScalaScaffold {
 //
 //  }
 
-  def mkCodec(tpe :TypeAny) :Tree = {
+  def mkCodec(tpe :TypeAny) :Term = {
     tpe.fold(
       tpea => transA(tpea).defaultCodec.tree,
       _.fold(
         tpes => transS(tpes).defaultCodec.tree,
-        id => q"${TermName(id.ident)}.codec"
+        id => q"${Term.Name(id.ident)}.codec"
       )
     )
   }
-  def mkRepr(tpe :TypeAny) :Tree = {
+  def mkRepr(tpe :TypeAny) :Type = {
     tpe.fold(
       tpea => transA(tpea).defaultCodec.tpe.mirror.tree,
       _.fold(
         tpes => transS(tpes).defaultCodec.tpe.mirror.tree,
-        id => q"${TermName(id.ident)}.Expr"
+        id => Type.Select(Term.Name(id.ident), t"Expr")
       )
     )
   }
   case class scalaStructTemplate(body: XDRStructBody) extends scalaTemplate {
     val components = body.components.map(decl => SemanticProcesser.transDecl(decl))
 
-    val codec = components.init.foldRight(q"${mkCodec(components.last._2)}")(
+    val codec :Term = components.init.foldRight(mkCodec(components.last._2))(
       (c, acc) => {
-        q"$acc.::(${mkCodec(c._2)})"
+        q"Term(acc).::(${mkCodec(c._2)})"
       }
     )
-    val decls = components.map(c => Typed(q"${TermName(c._1)}", mkRepr(c._2)))
+    val decls = components.map(c => Pat.Typed(p"${Term.Name(c._1)}", mkRepr(c._2)))
 
-    override def defaultCodec = ScalaCodecExpr(codec, ScalaFragmentType(ScalaPrimaryType(tq"Unit")))
+    override def defaultCodec = ScalaCodecExpr(codec, ScalaFragmentType(ScalaPrimaryType(t"Unit")))
     override def defaultRepr = None
     override def concreteRepr = Seq.empty
   }
@@ -198,67 +199,67 @@ object ScalaScaffold {
     //implicit def casenil = at[CNil](_ => scalaDefualtCompoundType())
 
     implicit def caseOpaqueF = at[XDRFixedLengthOpaque](x =>
-      scalaPrimaryTemplate(tq"Vector[Byte]",
+      scalaPrimaryTemplate(t"Vector[Byte]",
         x.length.dig.fold(
-          (id) => q"XDRFixedLengthOpaque(${TermName(id.ident)})",
-          (value) => q"XDRFixedLengthOpaque(${Constant(value.dig)})"
+          (id) => q"XDRFixedLengthOpaque(${Term.Name(id.ident)})",
+          (value) => q"XDRFixedLengthOpaque(${Lit.Int(value.dig)})"
         )
       )
     )
 
     implicit def caseOpaqueV = at[XDRVariableLengthOpaque](x =>
-      scalaPrimaryTemplate(tq"Vector[Byte]",
+      scalaPrimaryTemplate(t"Vector[Byte]",
         x.maxlength.map(
           _.dig.fold(
-            (id) => q"XDRVariableLengthOpaque(Some(${TermName(id.ident)}))",
-            (value) => q"XDRVariableLengthOpaque(Some(${Constant(value.dig)}))")
+            (id) => q"XDRVariableLengthOpaque(Some(${Term.Name(id.ident)}))",
+            (value) => q"XDRVariableLengthOpaque(Some(${Lit.Int(value.dig)}))")
         ).getOrElse(q"XDRVariableLengthOpaque(None)")
       )
     )
 
     implicit def caseString = at[XDRString](x =>
-      scalaPrimaryTemplate(tq"String",
+      scalaPrimaryTemplate(t"String",
         x.maxlength.map(
           _.dig.fold(
-            (id) => q"XDRString(Some(${TermName(id.ident)}))",
-            (value) => q"XDRString(Some(${Constant(value.dig)}))")
+            (id) => q"XDRString(Some(${Term.Name(id.ident)}))",
+            (value) => q"XDRString(Some(${Lit.Int(value.dig)}))")
         ).getOrElse(q"XDRString(None)")
       )
     )
 
     implicit def caseVoid = at[XDRVoid.type](x =>
-      scalaPrimaryTemplate(tq"Unit", q"XDRVoid")
+      scalaPrimaryTemplate(t"Unit", q"XDRVoid")
     )
 
     implicit def caseInt = at[XDRInteger.type](x =>
-      scalaPrimaryTemplate(tq"Int", q"XDRInteger")
+      scalaPrimaryTemplate(t"Int", q"XDRInteger")
     )
 
     implicit def caseUInt = at[XDRUnsignedInteger.type](x =>
-      scalaPrimaryTemplate(tq"Long", q"XDRUnsignedInteger")
+      scalaPrimaryTemplate(t"Long", q"XDRUnsignedInteger")
     )
 
     implicit def caseHyper = at[XDRHyper](x =>
       scalaPrimaryTemplate(
-        if (x.signed) tq"Long"
-        else tq"BigInt",
+        if (x.signed) t"Long"
+        else t"BigInt",
         if (x.signed) q"XDRHyper"
         else q"XDRUnsignedHyper"
       )
     )
 
     implicit def caseFloat = at[XDRFloat.type](x =>
-      scalaPrimaryTemplate(tq"Float", q"XDRFloat")
+      scalaPrimaryTemplate(t"Float", q"XDRFloat")
     )
 
     implicit def caseDouble = at[XDRDouble.type](x =>
-      scalaPrimaryTemplate(tq"Double", q"XDRDouble")
+      scalaPrimaryTemplate(t"Double", q"XDRDouble")
     )
 
-    implicit def caseQuad = at[XDRQuadruple.type](_ => scalaPrimaryTemplate(tq"BigDecimal", q"XDRQuadruple"))
+    implicit def caseQuad = at[XDRQuadruple.type](_ => scalaPrimaryTemplate(t"BigDecimal", q"XDRQuadruple"))
 
     implicit def caseBoolean = at[XDRBoolean.type](x =>
-      scalaPrimaryTemplate(tq"Boolean", q"XDRBoolean")
+      scalaPrimaryTemplate(t"Boolean", q"XDRBoolean")
     )
 
     implicit def caseEnum = at[XDREnumeration](x =>  {
@@ -324,8 +325,8 @@ object ScalaScaffold {
     )
   }
 
-  def statementsInScope(tree :Tree) :List[Tree] = {
-    val chlds = tree.children
+  def statementsInScope(tree :Term.Block) :List[Stat] = {
+    val chlds = tree.stats
     if (chlds.isEmpty) chlds
     else chlds.init
   }
@@ -376,7 +377,7 @@ object ScalaScaffold {
 //    )
 //  }
 
-  def reify(tpe :TypeAny, scope :NestedScope): List[Tree] = {
+  def reify(tpe :TypeAny, scope :NestedScope): List[Stat] = {
     val Some(tpl) = transAny(tpe, scope)
     val ScalaCodecExpr(codec, ScalaFragmentType(ftype)) = tpl.defaultCodec
     statementsInScope(
@@ -396,13 +397,13 @@ object ScalaScaffold {
 
         val conststat = ast.constdefs.map(kv => {
           val (name, value) = kv
-          q"val ${TermName(name)} :Int = ${Constant(value.dig)}"
-        })
-        val pkgstats = ast.typedefs.map(td => SemanticProcesser.reifyTypeDef(td))
+          q"val ${Pat.Var(Term.Name(name))} :Int = ${Lit.Int(value.dig)}"
+        }).toList
+        val pkgstats = ast.typedefs.map(td => SemanticProcesser.reifyTypeDef(td)).toList
 
         pkgname.map( pn => {
-          val pname = TermName(pn)
-          q"""
+          val pname = Term.Name(pn)
+          source"""
             package object $pname {
             ..$conststat
             }
@@ -410,7 +411,7 @@ object ScalaScaffold {
             ..$pkgstats
             }
             """
-        }).getOrElse(q"..${conststat ++ pkgstats}")
+        }).getOrElse(q"..${(conststat ++ pkgstats).toList}")
       }
     }
 
@@ -443,7 +444,7 @@ object ScalaScaffold {
       }
     }
 
-    def reifyTypeDef(td :TypeDef)(implicit ns :NamespaceScope) :Tree = {
+    def reifyTypeDef(td :TypeDef)(implicit ns :NamespaceScope) :Stat = {
       val curr = ScalaScaffold.NestedScope(ns)
       ScalaScaffold.createObject(td.ident,
         ScalaScaffold.reify(td.tpe, curr)

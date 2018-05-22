@@ -18,9 +18,9 @@ object annotations {
 
   final class xdrfile(val ns :String) extends StaticAnnotation {
     //def macroTransform(annottees: Any*): Any = macro xdrfileImpl
-    inline def apply(defn: Any): Any = meta {
-      abort("@xdrfile must annotate an object.")
-    }
+//    inline def apply(defn: Any): Any = meta {
+//      abort("@xdrfile must annotate an object.")
+//    }
   }
 }
 
