@@ -1,6 +1,6 @@
 package mytests
 
-import com.inthenow.zcheck.SpecLite
+import org.scalatest._
 import org.strllar.scalaxdr.XDRSyntax.TopParser
 import org.strllar.scalaxdr.codegen
 import shapeless.{HNil, ::}
@@ -8,12 +8,11 @@ import scala.reflect.runtime.universe._
 
 import scala.util.Success
 
-object CodeGenSpec extends SpecLite {
+object CodeGenSpec extends FlatSpec with Matchers  {
   def verifyCodeGenFull(source :String, ast :Tree): Unit = {
     val parser = new TopParser(source)
     val Success(ns :: spec  :: HNil)  = parser.XDRFiles.run()
-    //showRaw(codegen.genAST("test_package", spec)) must_== showRaw(ast)
-    showCode(codegen.genAST("test_package", spec)) must_== showCode(ast)
+    codegen.genAST("test_package", spec).syntax shouldEqual showCode(ast)
   }
 
   def verifyCodeGenLite(source :String, ast :Tree): Unit = {
@@ -21,11 +20,11 @@ object CodeGenSpec extends SpecLite {
     val Success(ns :: spec  :: HNil)  = parser.XDRFiles.run()
     val q"package object test_package {..$dontcare}; package test_package {..$stats}"
     = codegen.genAST("test_package", spec)
-    showCode(q"..$stats") must_== showCode(ast)
+    showCode(q"..$stats") shouldEqual showCode(ast)
   }
 
-  "CodeGen" should {
-    "generate simple structure" in {
+  it should "CodeGen" in {
+    it should "generate simple structure" in {
       verifyCodeGenFull(
         """
         |namespace stellar {
@@ -74,7 +73,7 @@ object CodeGenSpec extends SpecLite {
       //            }
       //          """)
     }
-    "handle nested anonymous structure" in {
+    it should "handle nested anonymous structure" in {
       verifyCodeGenLite(
         """
           |namespace stellar {
